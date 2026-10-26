@@ -1,0 +1,7 @@
+parc_solution/build/
+parc_solution/install/
+parc_solution/log/
+parc_solution/config/build/
+parc_solution/config/install/
+parc_solution/config/log/
+**/__pycache__/

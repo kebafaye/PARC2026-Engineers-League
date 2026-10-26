@@ -1,0 +1,65 @@
+<!--
+  PARC 2026 - copy of Nav2's navigate_to_pose_w_replanning_and_recovery.xml with
+  every ClearEntireCostmap call on the GLOBAL costmap removed.
+
+  Why: the cafe tables are only visible to the top depth camera (the LiDAR sits
+  ~4 cm off the floor and sees a 4 cm pedestal, not a 91 cm tabletop). The camera
+  has a narrow field of view, so the global costmap is the only place that
+  knowledge accumulates - it plays the role a SLAM map would.
+
+  The stock tree wipes that memory on every recovery. Measured: a single recovery
+  freed 36758 of 49821 blocking cells. The planner then saw an empty room, produced
+  a ~10 m direct route, the robot drove at a table it had already mapped, the camera
+  re-marked it, the route jumped back to ~35 m, planning failed, recovery fired and
+  wiped the map again. That loop is exactly the 10 m <-> 35 m path oscillation that
+  kept the robot from committing to any route.
+
+  The LOCAL costmap clears are kept: it is a 5 m rolling window rebuilt from live
+  sensor data in about a second, so clearing it is cheap and genuinely useful for
+  unsticking the controller.
+-->
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
+        <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}"/>
+            <!-- Was: clear the global costmap. Now a no-op wait, so a transient
+                 planning failure gets a retry without destroying the map. -->
+            <Sequence>
+              <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
+              <Wait wait_duration="1.0"/>
+            </Sequence>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="FollowPath">
+          <FollowPath path="{path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}"/>
+          <Sequence>
+            <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
+            <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+          </Sequence>
+        </RecoveryNode>
+      </PipelineSequence>
+      <Sequence>
+        <Fallback>
+          <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
+          <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
+        </Fallback>
+        <ReactiveFallback name="RecoveryFallback">
+          <GoalUpdated/>
+          <RoundRobin name="RecoveryActions">
+            <Sequence name="ClearingActions">
+              <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
+            </Sequence>
+            <Spin spin_dist="1.57" error_code_id="{spin_error_code}"/>
+            <Wait wait_duration="5.0"/>
+            <BackUp backup_dist="0.30" backup_speed="0.15" error_code_id="{backup_code_id}"/>
+          </RoundRobin>
+        </ReactiveFallback>
+      </Sequence>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>
