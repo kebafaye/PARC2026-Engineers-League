@@ -5,3 +5,11 @@ parc_solution/config/build/
 parc_solution/config/install/
 parc_solution/config/log/
 **/__pycache__/
+
+# Throwaway debug captures from the AprilTag fixture work. frame_check4.png is the
+# exception: publish_known_good_frame.py replays it as a reference frame that is
+# known to decode (tag36h11 id 0, hamming 0, decision_margin 112).
+test_assets/frame_check*.png
+!test_assets/frame_check4.png
+test_assets/calib_frame*.png
+test_assets/tag_crop*.png

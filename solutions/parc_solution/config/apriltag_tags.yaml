@@ -1,0 +1,36 @@
+/**:
+    ros__parameters:
+        image_transport: raw
+        family: 36h11
+        # Edge size of the BLACK square, in metres - not the white quiet zone, not the
+        # printed card. Reported depth scales LINEARLY with this number, and nothing
+        # about a wrong value looks wrong in the detection itself.
+        #
+        # Measured, not assumed. Against a synthetic frame drawing the marker at
+        # exactly size*fx/depth pixels, size: 0.6 reproduced a known 3.000 m at
+        # 3.002 m (1.001x) - so the value below is right for a tag whose black square
+        # really is 0.6 m. The same 0.6 against the Gazebo fixture, whose detected
+        # square turned out to be 0.296 m, reported a tag 2.03x too far away (4.78 m
+        # for a true 2.36 m) and sent Nav2 to empty floor well beyond it.
+        #
+        # So: MUST be re-measured against whatever tags are actually mounted, both in
+        # any official sim world and on the real robot. Park at a tape-measured
+        # distance and run solutions/test_assets/calibrate_tag_size.py, which prints
+        # the corrected value directly.
+        size: 0.6
+        max_hamming: 0
+        qos_profile: default
+
+        detector:
+            threads: 1
+            # Default (2.0) halves the working resolution before quad detection.
+            # Confirmed by direct test (test_assets/): our tag is already marginal at
+            # ~12 px/module at a 2 m working distance: decimate=2.0 pushed detection to
+            # zero. 1.0 costs more CPU per frame but is what actually finds the tag.
+            decimate: 1.0
+            blur: 0.0
+            refine: True
+            sharpening: 0.25
+            debug: False
+
+        pose_estimation_method: "pnp"
