@@ -1,0 +1,87 @@
+# Named places in the restaurant, and where the robot should stand to serve each one.
+#
+# This is the bridge between language and Nav2. A speech layer resolves what someone
+# said to one of these NAMES; the robot owns the coordinates. That split is deliberate:
+# an LLM asked for coordinates can invent plausible ones and there is no way to tell,
+# whereas a name either matches this closed set or it does not, and "I don't know where
+# that is" is a sane thing for the robot to say back.
+#
+# Poses are APPROACH poses - where the robot parks to work at a place - not the place's
+# own centre, which for a table is inside the furniture. Each was derived by offsetting
+# from the object's pose in parc_robot_bringup/worlds/task_world.sdf along a side left
+# open by the chairs, then clearance-checked against every other object in that world.
+# Clearance is measured between the robot's circumscribed circle (0.354 m, from the
+# nav2_params footprint) and the obstacle's own extent (0.646 m for the 0.913 m square
+# tabletop); every entry below keeps at least 0.30 m of gap on top of that.
+#
+# `base` and `comptoir` are not offsets from an object. They are listed verbatim
+# because they are known reachable by direct observation: the robot spawns at the
+# first, and reached 0.51 m of the goal centre on a scored run near the second.
+#
+# yaw_deg is the heading the robot ends on, pointing at the place it is serving.
+# Table numbering has gaps (0, 1, 4, 6, 7, 9) because the world file does - better a
+# name that matches the simulation than a tidier one that needs translating.
+
+locations:
+  table_0:
+    x: 3.21
+    y: -1.37
+    yaw_deg: 180
+    world_object: cafe_table_0
+    aliases: ["table 0", "table zero", "table est"]
+
+  table_1:
+    x: 1.15
+    y: -2.96
+    yaw_deg: 180
+    world_object: cafe_table_1
+    aliases: ["table 1", "table un", "table centre"]
+
+  table_4:
+    x: -0.26
+    y: -0.74
+    yaw_deg: 90
+    world_object: cafe_table_4
+    aliases: ["table 4", "table quatre", "table nord"]
+
+  table_6:
+    x: -0.82
+    y: -1.34
+    yaw_deg: 180
+    world_object: cafe_table_6
+    aliases: ["table 6", "table six", "table ouest"]
+
+  table_7:
+    x: -0.87
+    y: -5.05
+    yaw_deg: 180
+    world_object: cafe_table_7
+    aliases: ["table 7", "table sept", "table sud-ouest"]
+
+  table_9:
+    x: 3.30
+    y: -5.05
+    yaw_deg: 180
+    world_object: cafe_table_9
+    aliases: ["table 9", "table neuf", "table sud-est"]
+
+  distributeur:
+    x: 3.72
+    y: -0.43
+    yaw_deg: 90
+    world_object: VendingMachine
+    aliases: ["vending machine", "machine", "distributeur automatique"]
+
+  base:
+    x: -0.20
+    y: -7.49
+    yaw_deg: 90
+    world_object: null
+    aliases: ["entree", "entrance", "depart", "home", "point de depart"]
+
+  comptoir:
+    x: -2.29
+    y: 1.70
+    yaw_deg: 90
+    world_object: null
+    aliases: ["counter", "bar", "cuisine", "kitchen", "comptoir principal"]

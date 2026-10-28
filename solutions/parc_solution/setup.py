@@ -37,6 +37,7 @@ setup(
             "evidence_map.py = parc_solution.evidence_map:main",
             "speed_governor.py = parc_solution.speed_governor:main",
             "tag_goal_bridge.py = parc_solution.tag_goal_bridge:main",
+            "mission_bridge.py = parc_solution.mission_bridge:main",
         ],
     },
 )
