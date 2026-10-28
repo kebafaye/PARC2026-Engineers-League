@@ -33,17 +33,34 @@ import rclpy
 import tf2_ros
 from apriltag_msgs.msg import AprilTagDetectionArray
 from geometry_msgs.msg import PoseStamped
-from nav2_msgs.action import NavigateToPose
+from nav2_msgs.action import BackUp, NavigateToPose
 from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Int32
+
+# Contact detection and the backoff that follows it are shared with
+# task_solution.py; see contact_reflex.py for why each value is what it is.
+from parc_solution.contact_reflex import (
+    BACKOFF_TIME_ALLOWANCE_S,
+    COLLISION_TOPICS,
+    Contacts,
+    build_backup_goal,
+    is_new_contact,
+)
 
 TAG_FAMILY = "36h11"
 STANDOFF_M = 0.6
 ROBOT_LOOKUP_TIMEOUT_S = 2.0
 GOAL_SEND_ATTEMPTS = 5
 GOAL_SEND_TIMEOUT_S = 20.0
+
+# How many times a single request may be re-planned after a contact before giving up.
+# Matches task_solution.py's MAX_GOAL_RETRIES: a robot that has hit something four
+# times on the way to one tag is wedged, and continuing to shove at it is how the
+# tipping-over failure in contact_reflex.py happened in the first place.
+MAX_CONTACT_RETRIES = 4
 
 
 class TagGoalBridge(Node):
@@ -65,14 +82,42 @@ class TagGoalBridge(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.nav_to_pose_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
+        self.backup_client = ActionClient(self, BackUp, "backup")
 
         self.tag_cache = {}  # tag id -> (x, y, last_seen_clock_seconds)
         self.pending_request = None
+        self.goal_handle = None
+        self.result_future = None
+
+        # Contact state, same shape as task_solution.py's RunMonitor.
+        self.contacts = 0
+        self._contact_last_seen_s = {}
+
         self.create_subscription(
             AprilTagDetectionArray, "/detections", self.on_detections, 10
         )
         self.create_subscription(Int32, "/parc/go_to_tag_id", self.on_tag_request, 10)
+
+        if Contacts is not None:
+            sensor_qos = QoSProfile(depth=10)
+            sensor_qos.reliability = ReliabilityPolicy.BEST_EFFORT
+            for topic in COLLISION_TOPICS:
+                self.create_subscription(
+                    Contacts, topic, self.make_contact_callback(topic), sensor_qos
+                )
+
         self.get_logger().info("Ready. Publish a tag ID on /parc/go_to_tag_id to drive to it.")
+
+    def make_contact_callback(self, topic):
+        def callback(msg):
+            now_s = self.get_clock().now().nanoseconds / 1e9
+            for contact in msg.contacts:
+                if not is_new_contact(self._contact_last_seen_s, topic, contact, now_s):
+                    continue
+                self.contacts += 1
+                self.get_logger().warn(f"Contact #{self.contacts}: {contact.collision2.name}")
+
+        return callback
 
     def on_detections(self, msg):
         for detection in msg.detections:
@@ -146,6 +191,97 @@ class TagGoalBridge(Node):
 
         if not self.send_goal(goal_pose):
             self.get_logger().error("Nav2 never acknowledged the goal - aborting.")
+            return
+
+        self.monitor_navigation(tag_xy)
+
+    def monitor_navigation(self, tag_xy):
+        """Watch the run and apply the contact reflex until Nav2 is done.
+
+        Without this the node was fire-and-forget: it sent one goal and never looked
+        again. Watched that fail for real - the robot drove into cafe_table_6, sat
+        there grinding against it while the controller logged "Failed to make
+        progress", and nothing ever backed it off. task_solution.py has had this
+        reflex since the same table tipped the robot over; the tag path needs it just
+        as much, because a tag is every bit as likely to sit behind furniture.
+
+        Blocking here is safe: handle_request() runs on the main loop, not on an
+        executor callback (see on_tag_request).
+        """
+        contacts_handled = self.contacts
+        retries = 0
+
+        while rclpy.ok():
+            if self.result_future is not None and self.result_future.done():
+                self.get_logger().info("Navigation finished.")
+                break
+
+            if self.contacts > contacts_handled:
+                contacts_handled = self.contacts
+                if retries >= MAX_CONTACT_RETRIES:
+                    self.get_logger().error(
+                        f"Still hitting things after {retries} backoffs - giving up on "
+                        "this tag rather than keeping on shoving."
+                    )
+                    self.cancel_current_goal()
+                    break
+                retries += 1
+                self.get_logger().warn(
+                    f"Contact - stopping and backing off before replanning "
+                    f"(attempt {retries}/{MAX_CONTACT_RETRIES})."
+                )
+                self.cancel_current_goal()
+                self.send_backup()
+
+                # Re-aim from where the robot actually ended up: backing off moves it,
+                # so the approach line to the tag is not the one we planned from.
+                robot_xy = self.lookup_xy("base_footprint", ROBOT_LOOKUP_TIMEOUT_S)
+                if robot_xy is None:
+                    self.get_logger().error("Lost the robot's pose - abandoning the run.")
+                    break
+                if not self.send_goal(self.make_standoff_goal(tag_xy, robot_xy)):
+                    self.get_logger().error("Nav2 never acknowledged the replanned goal.")
+                    break
+
+            time.sleep(0.1)
+
+        self.goal_handle = None
+        self.result_future = None
+
+    def cancel_current_goal(self):
+        if self.goal_handle is None:
+            return
+        future = self.goal_handle.cancel_goal_async()
+        deadline = time.time() + 5.0
+        while rclpy.ok() and not future.done() and time.time() < deadline:
+            time.sleep(0.1)
+
+    def send_backup(self, attempts=3, timeout_s=10.0):
+        """Nav2's collision-checked BackUp, with the same lost-response tolerance as
+        send_goal(). Polled rather than spun on, for the reason in on_tag_request()."""
+        if not self.backup_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().warn("No backup action server - skipping the backoff.")
+            return
+
+        goal = build_backup_goal()
+        for attempt in range(1, attempts + 1):
+            future = self.backup_client.send_goal_async(goal)
+            deadline = time.time() + timeout_s
+            while rclpy.ok() and not future.done() and time.time() < deadline:
+                time.sleep(0.1)
+            handle = future.result() if future.done() else None
+            if handle is not None and handle.accepted:
+                result_future = handle.get_result_async()
+                deadline = time.time() + BACKOFF_TIME_ALLOWANCE_S + 5.0
+                while rclpy.ok() and not result_future.done() and time.time() < deadline:
+                    time.sleep(0.1)
+                return
+            self.get_logger().warn(
+                f"No answer to the backup request (attempt {attempt}/{attempts})."
+            )
+            if attempt < attempts:
+                time.sleep(1.0)
+        self.get_logger().warn("Backup never acknowledged - replanning from here anyway.")
 
     def make_standoff_goal(self, tag_xy, robot_xy):
         """A point STANDOFF_M in front of the tag, on the line from the tag to the
@@ -199,6 +335,10 @@ class TagGoalBridge(Node):
                 time.sleep(0.1)
             handle = future.result() if future.done() else None
             if handle is not None and handle.accepted:
+                # Kept so the contact reflex can cancel this goal, and so
+                # monitor_navigation() can tell when Nav2 is finished with it.
+                self.goal_handle = handle
+                self.result_future = handle.get_result_async()
                 self.get_logger().info("Goal sent.")
                 return True
             self.get_logger().warn(

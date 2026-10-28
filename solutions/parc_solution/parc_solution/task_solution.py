@@ -43,9 +43,8 @@ import rclpy
 import tf2_ros
 import yaml
 from ament_index_python.packages import get_package_share_directory
-from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import Point, PoseStamped
-from nav2_msgs.action import BackUp, NavigateToPose
+from geometry_msgs.msg import PoseStamped
+from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import OccupancyGrid
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
@@ -53,10 +52,15 @@ from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
-try:
-    from ros_gz_interfaces.msg import Contacts
-except ImportError:  # pragma: no cover - only used for the optional contact report
-    Contacts = None
+# Contact detection and the backoff that follows it are shared with
+# tag_goal_bridge.py; see contact_reflex.py for why each value is what it is.
+from parc_solution.contact_reflex import (
+    BACKOFF_TIME_ALLOWANCE_S,
+    COLLISION_TOPICS,
+    Contacts,
+    build_backup_goal,
+    is_new_contact,
+)
 
 
 TASK_PARAMS_PKG = "parc_robot_bringup"
@@ -65,31 +69,6 @@ TASK_PARAMS_RELPATH = os.path.join("config", "task_params.yaml")
 # Ground-truth world pose. See world_anchor.py for why this topic and not
 # /sitoe_robot/pose, which the competition's bridge declares but never fills.
 WORLD_POSE_TOPIC = "/model/sitoe_robot/pose"
-
-COLLISION_TOPICS = (
-    "/base_collisions",
-    "/top_chassis_collisions",
-    "/left_wheel_collisions",
-    "/right_wheel_collisions",
-)
-
-# The bumper sensors report permanent contact with the restaurant floor, which is not
-# a collision in the sense the competition scores. Without this filter the contact
-# count is inflated from the first second.
-GROUND_CONTACT_NAMES = ("main_floor", "ground_plane")
-
-# How long a (sensor, object) pair must go quiet before touching it again counts as a
-# fresh contact. Below this it is the same sustained push, reported at sensor rate.
-#
-# The first version remembered every pair forever - once cafe_table_6 had triggered
-# the backoff reflex once, grazing it again minutes later, after backing off and being
-# replanned right back alongside it, was silently ignored: same pair, already "seen".
-# The robot pushed against it with no reflex to stop it and tipped over with the report
-# still reading "contacts: 1". A 2 s quiet window is comfortably longer than the gap
-# between messages during one continuous push, and comfortably shorter than the time a
-# backoff-and-replan cycle takes, so a genuine second incident is never mistaken for
-# the first.
-CONTACT_COOLDOWN_S = 2.0
 
 # The goal marker is a cylinder of radius 0.6 m, and the rules say the task is complete
 # as soon as ANY part of the robot is inside it. With the robot centre 0.45 m from the
@@ -151,23 +130,6 @@ STACK_DEAD_AFTER_S = 15.0
 # half a second of obstacle data and removes every stale cell. (In the version of this
 # solution that had no static layer, the same wipe destroyed the only map there was -
 # which is why behavior_trees/ removes it from the recovery branch.)
-# On contact: stop, back off, then let the planner try again with the obstacle now on
-# the map. Without this reflex the robot keeps executing the path it was on - pushing
-# against whatever it just hit - until a new plan arrives seconds later. It did exactly
-# that against a cafe_table and TIPPED OVER: 77 s into the run, 6 m from the goal, on
-# its side with no way back. A robot whose centre of mass sits 0.30 m up over a 0.17 m
-# half-track cannot afford to lean on anything.
-#
-# The backoff itself must not be blind. An earlier version published raw Twist commands
-# straight backward for a fixed duration, with no idea what was behind the robot - and
-# it backed straight into a WoodenChair it never checked for, turning one contact into
-# two. Nav2's own BackUp behavior (behavior_server already loads it) walks the same
-# path nav2_regulated_pure_pursuit_controller does for collision checking: it queries
-# the local costmap along the reverse path and stops early if that path is blocked,
-# rather than trusting the caller to have picked a safe distance.
-BACKOFF_DIST_M = 0.35
-BACKOFF_SPEED_MS = 0.12
-BACKOFF_TIME_ALLOWANCE_S = 8.0
 
 GLOBAL_COSTMAP_CLEAR_PERIOD_S = 25.0
 CLEAR_GLOBAL_COSTMAP_SERVICE = "/global_costmap/clear_entirely_global_costmap"
@@ -348,13 +310,7 @@ class RunMonitor(Node):
         def callback(msg):
             now_s = self.get_clock().now().nanoseconds / 1e9
             for contact in msg.contacts:
-                names = f"{contact.collision1.name} {contact.collision2.name}"
-                if any(ground in names for ground in GROUND_CONTACT_NAMES):
-                    continue
-                pair = (topic, contact.collision1.name, contact.collision2.name)
-                last = self._contact_last_seen_s.get(pair)
-                self._contact_last_seen_s[pair] = now_s
-                if last is not None and now_s - last < CONTACT_COOLDOWN_S:
+                if not is_new_contact(self._contact_last_seen_s, topic, contact, now_s):
                     continue
                 self.contacts += 1
                 self.get_logger().warn(f"Contact #{self.contacts}: {contact.collision2.name}")
@@ -480,10 +436,7 @@ def send_backup(navigator, logger, attempts=3, timeout_s=10.0):
     local costmap along the reverse path - it stops itself early if something is
     behind the robot, which a blind Twist publish cannot do.
     """
-    goal = BackUp.Goal()
-    goal.target = Point(x=BACKOFF_DIST_M)
-    goal.speed = BACKOFF_SPEED_MS
-    goal.time_allowance = Duration(sec=int(BACKOFF_TIME_ALLOWANCE_S))
+    goal = build_backup_goal()
 
     for attempt in range(1, attempts + 1):
         future = navigator.backup_client.send_goal_async(goal, navigator._feedbackCallback)
