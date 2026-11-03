@@ -13,16 +13,24 @@ Prerequisites, both already true for this robot:
     pose needs no further conversion, exactly like the main task goal in
     task_solution.py.
 
-Position only, not orientation. apriltag_ros's "pnp" pose estimator has a classic
-planar-marker ambiguity near fronto-parallel views: tested against a tag viewed
-almost head-on at ~2.3 m, it reported a translation roughly twice the true depth and
-a rotation ~180 deg from the tag's actual mounted orientation - the textbook flipped
-PnP solution, not a bug in this node or in apriltag_ros's detector (the 2D detection
-itself was clean: hamming 0, decision_margin 112). Trusting that rotation would aim
-the robot at nonsense. The translation's (x, y) is far more robust - it only needs
-the detected corners' pixel centroid and the camera intrinsics - so this node uses
-only that, and derives the approach heading itself from the robot's own position
-rather than from the tag's reported orientation.
+Approach along the tag's own normal, because the rules score alignment. A tag counts
+as visited only when the robot stops with its centre within 0.5 m AND facing the tag
+within +/-12 degrees of its surface, so parking wherever the robot happened to come
+from does not qualify - the standoff point has to sit on the line the tag faces along.
+
+An earlier version here used the tag's position only and derived the heading from the
+robot's own position, on the grounds that the planar-marker PnP solution flips near
+fronto-parallel views. That was wrong, and wrong for an embarrassing reason: it was
+decided while the declared tag `size` was 2x too large, which corrupts the whole pose
+and looks exactly like a flip. Re-measured with the size correct, against a marker
+rendered at known yaw by projecting its corners through the real camera matrix
+(test_assets/tag_angle_sweep.py), the reported angle tracks truth to **5.0 deg worst
+case** across 0-50 deg - comfortably inside the 12 deg budget. The residual is largest
+square-on, which is the ambiguity still showing, and it biases towards reporting
+"square-on", so it costs alignment rather than inventing it.
+
+apriltag_ros points the tag's z axis OUT of the printed face, so the direction the
+robot must approach from is the tag frame's +z, flattened to the floor.
 """
 import math
 import sys
@@ -51,7 +59,19 @@ from parc_solution.contact_reflex import (
 )
 
 TAG_FAMILY = "36h11"
-STANDOFF_M = 0.6
+
+# The rules give 0.5 m from the robot's centre to the tag. Park at 0.35 m: with
+# nav2_params.yaml's xy_goal_tolerance tightened to 0.10 m, every stop then lands
+# inside 0.45 m with room to spare. 0.40 m was tried first and measured 0.49 m on
+# the day - inside the limit, but only just, and only by luck.
+VISIT_RADIUS_M = 0.5
+STANDOFF_M = 0.35
+
+# Alignment the rules demand, and what the estimator costs us of it: measured at 5.0
+# deg worst case (test_assets/tag_angle_sweep.py), leaving about 7 deg for everything
+# downstream - Nav2's yaw_goal_tolerance, wheel slip, and the SLAM pose itself.
+VISIT_ALIGN_DEG = 12.0
+
 ROBOT_LOOKUP_TIMEOUT_S = 2.0
 GOAL_SEND_ATTEMPTS = 5
 GOAL_SEND_TIMEOUT_S = 20.0
@@ -125,29 +145,46 @@ class TagGoalBridge(Node):
             if not self.tf_buffer.can_transform("map", tag_frame, rclpy.time.Time()):
                 continue
             t = self.tf_buffer.lookup_transform("map", tag_frame, rclpy.time.Time())
+            normal = self.outward_normal(t.transform.rotation)
+            if normal is None:
+                # The tag is lying flat enough that its face has no direction along
+                # the floor. Nothing sensible to approach along, so keep the previous
+                # sighting rather than overwrite it with a heading we cannot use.
+                continue
             now_s = self.get_clock().now().nanoseconds / 1e9
             was_new = detection.id not in self.tag_cache
             self.tag_cache[detection.id] = (
                 t.transform.translation.x,
                 t.transform.translation.y,
+                normal[0],
+                normal[1],
                 now_s,
             )
             if was_new:
                 self.get_logger().info(
                     f"First sighting of {tag_frame} at "
-                    f"({t.transform.translation.x:.2f}, {t.transform.translation.y:.2f})"
+                    f"({t.transform.translation.x:.2f}, {t.transform.translation.y:.2f}), "
+                    f"face pointing {math.degrees(math.atan2(normal[1], normal[0])):.0f} deg"
                 )
 
-    def lookup_xy(self, frame, timeout_s):
-        """Poll the TF buffer. Never spins the node: the background executor owns
-        that (see main()), and spinning the same node from here would re-enter it."""
-        deadline = time.time() + timeout_s
-        while rclpy.ok() and time.time() < deadline:
-            if self.tf_buffer.can_transform("map", frame, rclpy.time.Time()):
-                t = self.tf_buffer.lookup_transform("map", frame, rclpy.time.Time())
-                return (t.transform.translation.x, t.transform.translation.y)
-            time.sleep(0.1)
-        return None
+    @staticmethod
+    def outward_normal(q):
+        """Unit vector along the floor in the direction the tag's face looks.
+
+        apriltag_ros points the tag's z axis OUT of the printed face, back towards
+        whoever is reading it, so the outward normal is +z and not -z. Measured both
+        ways rather than assumed: with -z the approach pose for a tag 0.95 m ahead
+        landed at (1.27, -0.23), i.e. on the far side of the tag, which would have
+        the robot drive through it to get there. Returns None when the tag is nearly
+        floor-parallel and the direction collapses - there is no approach line then.
+        """
+        # Third column of the rotation matrix: the tag frame's z axis in `map`.
+        nx = 2.0 * (q.x * q.z + q.w * q.y)
+        ny = 2.0 * (q.y * q.z - q.w * q.x)
+        norm = math.hypot(nx, ny)
+        if norm < 0.3:  # face tilted more than ~72 deg out of vertical
+            return None
+        return (nx / norm, ny / norm)
 
     def on_tag_request(self, msg):
         """Record the request only. The actual work blocks (TF polling, waiting on
@@ -174,28 +211,53 @@ class TagGoalBridge(Node):
             )
             return
         tag_xy = (cached[0], cached[1])
-        age_s = self.get_clock().now().nanoseconds / 1e9 - cached[2]
+        normal = (cached[2], cached[3])
+        age_s = self.get_clock().now().nanoseconds / 1e9 - cached[4]
         self.get_logger().info(f"Using cached sighting, {age_s:.1f} s old.")
 
-        robot_xy = self.lookup_xy("base_footprint", ROBOT_LOOKUP_TIMEOUT_S)
-        if robot_xy is None:
-            self.get_logger().error("No current robot pose in 'map' - is world_anchor running?")
-            return
-
-        goal_pose = self.make_standoff_goal(tag_xy, robot_xy)
+        goal_pose = self.make_approach_goal(tag_xy, normal)
         self.get_logger().info(
-            f"{tag_frame} at ({tag_xy[0]:.2f}, {tag_xy[1]:.2f}); "
-            f"standing off to ({goal_pose.pose.position.x:.2f}, "
-            f"{goal_pose.pose.position.y:.2f})"
+            f"{tag_frame} at ({tag_xy[0]:.2f}, {tag_xy[1]:.2f}); approaching along its "
+            f"face to ({goal_pose.pose.position.x:.2f}, {goal_pose.pose.position.y:.2f})"
         )
 
         if not self.send_goal(goal_pose):
             self.get_logger().error("Nav2 never acknowledged the goal - aborting.")
             return
 
-        self.monitor_navigation(tag_xy)
+        self.monitor_navigation(tag_xy, normal)
+        self.report_visit(tag_frame, tag_xy, normal)
 
-    def monitor_navigation(self, tag_xy):
+    def report_visit(self, tag_frame, tag_xy, normal):
+        """State plainly whether this counts as a visit under the published rules.
+
+        Both halves are scored and both can fail independently: the robot can be
+        beautifully aligned a metre too far away, or close enough but square to the
+        wrong wall. Reporting one number for each is what makes a failed visit
+        diagnosable from the log instead of a shrug.
+        """
+        robot = self.lookup_pose("base_footprint", ROBOT_LOOKUP_TIMEOUT_S)
+        if robot is None:
+            self.get_logger().warn("No robot pose - cannot score the visit.")
+            return
+        (rx, ry, ryaw) = robot
+
+        distance = math.hypot(rx - tag_xy[0], ry - tag_xy[1])
+        # The robot should be looking back along the tag's face, i.e. opposite the
+        # outward normal. Wrap the difference into (-180, 180] before judging it.
+        want = math.atan2(-normal[1], -normal[0])
+        misalign = abs((math.degrees(ryaw - want) + 180.0) % 360.0 - 180.0)
+
+        ok_dist = distance <= VISIT_RADIUS_M
+        ok_align = misalign <= VISIT_ALIGN_DEG
+        verdict = "VISITE VALIDE" if (ok_dist and ok_align) else "NE COMPTE PAS"
+        self.get_logger().info(
+            f"{verdict} - {tag_frame}: {distance:.2f} m "
+            f"(limite {VISIT_RADIUS_M:.2f}), desalignement {misalign:.1f} deg "
+            f"(limite {VISIT_ALIGN_DEG:.0f})"
+        )
+
+    def monitor_navigation(self, tag_xy, normal):
         """Watch the run and apply the contact reflex until Nav2 is done.
 
         Without this the node was fire-and-forget: it sent one goal and never looked
@@ -233,13 +295,10 @@ class TagGoalBridge(Node):
                 self.cancel_current_goal()
                 self.send_backup()
 
-                # Re-aim from where the robot actually ended up: backing off moves it,
-                # so the approach line to the tag is not the one we planned from.
-                robot_xy = self.lookup_xy("base_footprint", ROBOT_LOOKUP_TIMEOUT_S)
-                if robot_xy is None:
-                    self.get_logger().error("Lost the robot's pose - abandoning the run.")
-                    break
-                if not self.send_goal(self.make_standoff_goal(tag_xy, robot_xy)):
+                # The approach pose itself does not move - it is fixed to the tag's
+                # face, not to wherever the robot ended up. Re-send the same one and
+                # let Nav2 plan a fresh route to it around whatever was just hit.
+                if not self.send_goal(self.make_approach_goal(tag_xy, normal)):
                     self.get_logger().error("Nav2 never acknowledged the replanned goal.")
                     break
 
@@ -283,26 +342,18 @@ class TagGoalBridge(Node):
                 time.sleep(1.0)
         self.get_logger().warn("Backup never acknowledged - replanning from here anyway.")
 
-    def make_standoff_goal(self, tag_xy, robot_xy):
-        """A point STANDOFF_M in front of the tag, on the line from the tag to the
-        robot's current position, facing the tag.
+    def make_approach_goal(self, tag_xy, normal):
+        """Stand STANDOFF_M out along the tag's face, looking straight back at it.
 
-        Deliberately ignores the tag's own reported orientation - see module
-        docstring. Approaching from "wherever the robot already is" is not as
-        elegant as approaching along the tag's true facing direction, but it is
-        robust to the exact failure mode measured here, and it is what the robot can
-        act on without that risk.
+        Unlike the earlier version this does not depend on where the robot is: the
+        pose is a property of the tag alone, which is what the rules score and what
+        makes a replan after a contact send the robot back to the same qualifying
+        spot rather than to a new one that happens to suit its latest position.
         """
-        dx = robot_xy[0] - tag_xy[0]
-        dy = robot_xy[1] - tag_xy[1]
-        dist = math.hypot(dx, dy)
-        if dist < 1e-3:
-            dx, dy, dist = 1.0, 0.0, 1.0
-        ux, uy = dx / dist, dy / dist
-
-        goal_x = tag_xy[0] + STANDOFF_M * ux
-        goal_y = tag_xy[1] + STANDOFF_M * uy
-        yaw = math.atan2(-uy, -ux)  # face the tag, i.e. the opposite of (ux, uy)
+        nx, ny = normal
+        goal_x = tag_xy[0] + STANDOFF_M * nx
+        goal_y = tag_xy[1] + STANDOFF_M * ny
+        yaw = math.atan2(-ny, -nx)  # look back down the normal, into the tag face
 
         pose = PoseStamped()
         pose.header.frame_id = "map"
@@ -312,6 +363,20 @@ class TagGoalBridge(Node):
         pose.pose.orientation.z = math.sin(yaw / 2.0)
         pose.pose.orientation.w = math.cos(yaw / 2.0)
         return pose
+
+    def lookup_pose(self, frame, timeout_s):
+        """(x, y, yaw) of `frame` in `map`, or None. Polls rather than spins."""
+        deadline = time.time() + timeout_s
+        while rclpy.ok() and time.time() < deadline:
+            if self.tf_buffer.can_transform("map", frame, rclpy.time.Time()):
+                t = self.tf_buffer.lookup_transform("map", frame, rclpy.time.Time())
+                q = t.transform.rotation
+                yaw = math.atan2(
+                    2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+                )
+                return (t.transform.translation.x, t.transform.translation.y, yaw)
+            time.sleep(0.1)
+        return None
 
     def send_goal(self, pose, attempts=GOAL_SEND_ATTEMPTS, timeout_s=GOAL_SEND_TIMEOUT_S):
         """Same lost-response-safe retry pattern as task_solution.py's send_goal():

@@ -109,8 +109,21 @@ controller_server:
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.25
-      yaw_goal_tolerance: 0.25
+      # Both tightened from Nav2's 0.25 default because the real task scores the
+      # stopping pose, and the defaults fail it on their own.
+      #
+      # An AprilTag visit needs the robot centre within 0.5 m of the tag and its
+      # heading within 12 deg of the tag's surface. At yaw 0.25 rad - 14.3 deg -
+      # Nav2 declares victory already outside the angular limit; measured for real,
+      # a run that reached 0.49 m scored 13.8 deg and did not count. At xy 0.25 m,
+      # a 0.35 m standoff can stop anywhere from 0.10 m to 0.60 m, so the distance
+      # limit goes too.
+      #
+      # The budget these leave: 0.35 +/- 0.10 m keeps every stop inside 0.45 m, and
+      # 0.10 rad (5.7 deg) plus the tag estimator's own 5.0 deg worst case
+      # (test_assets/tag_angle_sweep.py) totals 10.7 deg against the 12 allowed.
+      xy_goal_tolerance: 0.10
+      yaw_goal_tolerance: 0.10
     FollowPath:
       # RegulatedPurePursuit, NOT MPPI, and the reason is a measurement.
       #
