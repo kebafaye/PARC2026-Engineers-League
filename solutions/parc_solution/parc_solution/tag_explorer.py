@@ -60,6 +60,7 @@ CLEARANCE_M = 0.45
 MIN_FRONTIER_TRAVEL_M = 1.2
 
 SPIN_TIME_ALLOWANCE_S = 30.0
+GOTO_TIMEOUT_S = 120.0
 GOAL_SEND_ATTEMPTS = 3
 GOAL_SEND_TIMEOUT_S = 20.0
 DEFAULT_BUDGET_S = 300.0
@@ -270,7 +271,7 @@ class TagExplorer(Node):
             return True
 
         # Sweep where we stand before driving anywhere: the cheapest look available.
-        self.sweep()
+        self.sweep(deadline - time.time())
         if target_id in self.seen_tags:
             self.say(f"Tag {target_id} trouvé sans se déplacer.")
             return True
@@ -289,14 +290,14 @@ class TagExplorer(Node):
                 return target_id in self.seen_tags
 
             self.say(f"Cap sur {kind} ({target[0]:.2f}, {target[1]:.2f}).")
-            reached = self.goto(target)
+            reached = self.goto(target, deadline - time.time())
             # Record it either way: unreachable targets must not be chosen again, or
             # the search picks the same impossible cell for the rest of the budget.
             self.visited.append(target)
             if not reached:
                 continue
 
-            self.sweep()
+            self.sweep(deadline - time.time())
             if target_id in self.seen_tags:
                 self.say(f"Tag {target_id} trouvé.")
                 return True
@@ -304,7 +305,7 @@ class TagExplorer(Node):
         self.say(f"Tag {target_id} introuvable dans le temps imparti.")
         return False
 
-    def goto(self, xy):
+    def goto(self, xy, budget_s):
         pose = PoseStamped()
         pose.header.frame_id = "map"
         pose.header.stamp = self.get_clock().now().to_msg()
@@ -318,23 +319,26 @@ class TagExplorer(Node):
         handle = self.send(self.nav_client, goal)
         if handle is None:
             return False
-        return self.await_result(handle, timeout_s=120.0)
+        return self.await_result(handle, min(GOTO_TIMEOUT_S, budget_s))
 
-    def sweep(self):
+    def sweep(self, budget_s=None):
         """One full turn on the spot, so the camera sees every bearing from here.
 
         Nav2's Spin is collision-checked against the local costmap, so a turn that
         would clip furniture stops rather than pushing through it - which matters,
         because contacts are scored.
         """
+        allowance = SPIN_TIME_ALLOWANCE_S
+        if budget_s is not None:
+            allowance = min(allowance, max(0.0, budget_s))
+        if allowance <= 1.0:
+            return
         goal = Spin.Goal()
         goal.target_yaw = 2.0 * math.pi
-        goal.time_allowance = rclpy.duration.Duration(
-            seconds=SPIN_TIME_ALLOWANCE_S
-        ).to_msg()
+        goal.time_allowance = rclpy.duration.Duration(seconds=allowance).to_msg()
         handle = self.send(self.spin_client, goal)
         if handle is not None:
-            self.await_result(handle, timeout_s=SPIN_TIME_ALLOWANCE_S + 15.0)
+            self.await_result(handle, allowance + 15.0)
 
     def send(self, client, goal, attempts=GOAL_SEND_ATTEMPTS):
         """Retrying send, polled rather than spun on - the executor thread in main()
@@ -355,11 +359,30 @@ class TagExplorer(Node):
         return None
 
     def await_result(self, handle, timeout_s):
+        """Wait, and CANCEL on timeout rather than walking away from a live goal.
+
+        Leaving it running was measured costing real time: a 90 s search budget took
+        165 s, because explore() only checks the clock between targets while a drive
+        underneath it can run for two minutes. In a race that overrun comes straight
+        out of the tags still ahead.
+        """
+        if timeout_s <= 0:
+            self.cancel(handle)
+            return False
         future = handle.get_result_async()
         end = time.time() + timeout_s
         while rclpy.ok() and not future.done() and time.time() < end:
             time.sleep(0.1)
-        return future.done()
+        if not future.done():
+            self.cancel(handle)
+            return False
+        return True
+
+    def cancel(self, handle):
+        future = handle.cancel_goal_async()
+        end = time.time() + 5.0
+        while rclpy.ok() and not future.done() and time.time() < end:
+            time.sleep(0.1)
 
 
 def main(args=None):

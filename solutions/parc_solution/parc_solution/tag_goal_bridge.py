@@ -199,7 +199,15 @@ class TagGoalBridge(Node):
         """
         self.pending_request = msg.data
 
-    def handle_request(self, tag_id):
+    def handle_request(self, tag_id, budget_s=None):
+        """Drive to the tag and return whether the stop qualifies as a visit.
+
+        `budget_s` caps the drive. Without it the approach ran as long as Nav2 wanted:
+        measured at 206 s inside a 240 s race, which is most of the clock spent on one
+        tag. Past the cap the goal is cancelled and the visit scored where the robot
+        actually stands - sometimes that still qualifies, and either way the tags
+        behind it keep their time.
+        """
         tag_frame = f"tag{TAG_FAMILY}:{tag_id}"
         self.get_logger().info(f"Requested: go to {tag_frame}")
 
@@ -209,7 +217,7 @@ class TagGoalBridge(Node):
                 f"{tag_frame} has never been seen since this node started - nothing "
                 "to navigate to."
             )
-            return
+            return False
         tag_xy = (cached[0], cached[1])
         normal = (cached[2], cached[3])
         age_s = self.get_clock().now().nanoseconds / 1e9 - cached[4]
@@ -223,13 +231,14 @@ class TagGoalBridge(Node):
 
         if not self.send_goal(goal_pose):
             self.get_logger().error("Nav2 never acknowledged the goal - aborting.")
-            return
+            return False
 
-        self.monitor_navigation(tag_xy, normal)
-        self.report_visit(tag_frame, tag_xy, normal)
+        self.monitor_navigation(tag_xy, normal, budget_s)
+        return self.report_visit(tag_frame, tag_xy, normal)
 
     def report_visit(self, tag_frame, tag_xy, normal):
-        """State plainly whether this counts as a visit under the published rules.
+        """Whether this counts as a visit under the published rules. Returns a bool
+        so race_director.py can advance its pointer on the answer.
 
         Both halves are scored and both can fail independently: the robot can be
         beautifully aligned a metre too far away, or close enough but square to the
@@ -239,7 +248,7 @@ class TagGoalBridge(Node):
         robot = self.lookup_pose("base_footprint", ROBOT_LOOKUP_TIMEOUT_S)
         if robot is None:
             self.get_logger().warn("No robot pose - cannot score the visit.")
-            return
+            return False
         (rx, ry, ryaw) = robot
 
         distance = math.hypot(rx - tag_xy[0], ry - tag_xy[1])
@@ -250,14 +259,16 @@ class TagGoalBridge(Node):
 
         ok_dist = distance <= VISIT_RADIUS_M
         ok_align = misalign <= VISIT_ALIGN_DEG
-        verdict = "VISITE VALIDE" if (ok_dist and ok_align) else "NE COMPTE PAS"
+        valid = ok_dist and ok_align
+        verdict = "VISITE VALIDE" if valid else "NE COMPTE PAS"
         self.get_logger().info(
             f"{verdict} - {tag_frame}: {distance:.2f} m "
             f"(limite {VISIT_RADIUS_M:.2f}), desalignement {misalign:.1f} deg "
             f"(limite {VISIT_ALIGN_DEG:.0f})"
         )
+        return valid
 
-    def monitor_navigation(self, tag_xy, normal):
+    def monitor_navigation(self, tag_xy, normal, budget_s=None):
         """Watch the run and apply the contact reflex until Nav2 is done.
 
         Without this the node was fire-and-forget: it sent one goal and never looked
@@ -272,10 +283,18 @@ class TagGoalBridge(Node):
         """
         contacts_handled = self.contacts
         retries = 0
+        deadline = None if budget_s is None else time.time() + budget_s
 
         while rclpy.ok():
             if self.result_future is not None and self.result_future.done():
                 self.get_logger().info("Navigation finished.")
+                break
+
+            if deadline is not None and time.time() > deadline:
+                self.get_logger().warn(
+                    "Budget d'approche épuisé - on s'arrête ici et on note la pose."
+                )
+                self.cancel_current_goal()
                 break
 
             if self.contacts > contacts_handled:
