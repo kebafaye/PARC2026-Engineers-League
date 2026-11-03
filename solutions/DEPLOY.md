@@ -82,6 +82,37 @@ Le nœud annonce le verdict selon les deux critères du règlement :
 VISITE VALIDE - tag36h11:4: 0.38 m (limite 0.50), desalignement 4.5 deg (limite 12)
 ```
 
+## Démarrage vocal (+5 points, facultatif)
+
+Hors ligne, sur le robot, via le réseau 4 micros ReSpeaker. À installer **pendant un
+créneau d'essai**, pour que rien ne soit téléchargé le jour de la course :
+
+```bash
+pip install vosk sounddevice
+# petit modèle français, ~50 Mo - le poser dans le dossier de l'equipe
+```
+
+```bash
+# 4e terminal, lance AVANT race_director
+ros2 run parc_solution voice_start.py --word allez --model ~/<equipe>/vosk-model-small-fr
+```
+
+`race_director` attend `/parc/start_race` ; ce nœud y publie une seule fois quand il
+entend le mot. Rien d'autre ne commande le robot, donc la règle « ne pas bouger avant
+le mot » est garantie par cette attente et non par la finesse du détecteur.
+
+**En cas de doute, ne pas le lancer.** Démarrer la course à la main coûte les 5 points
+du bonus et rien de plus ; un déclenchement par le bruit du public fait recommencer la
+course *et* perdre le bonus. Le nœud journalise chaque candidat rejeté avec sa raison —
+c'est ce qu'il faut lire pendant un essai pour régler `MIN_CONFIDENCE` sur la salle
+réelle.
+
+Répétition sans micro, pour vérifier le câblage :
+
+```bash
+ros2 run parc_solution voice_start.py --word allez --fire-now
+```
+
 ## À vérifier dès le premier créneau d'essai
 
 Par ordre d'importance. Les trois premiers peuvent invalider la solution entière.

@@ -40,6 +40,7 @@ setup(
             "mission_bridge.py = parc_solution.mission_bridge:main",
             "tag_explorer.py = parc_solution.tag_explorer:main",
             "race_director.py = parc_solution.race_director:main",
+            "voice_start.py = parc_solution.voice_start:main",
         ],
     },
 )
