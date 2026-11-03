@@ -13,11 +13,17 @@
         # square turned out to be 0.296 m, reported a tag 2.03x too far away (4.78 m
         # for a true 2.36 m) and sent Nav2 to empty floor well beyond it.
         #
-        # So: MUST be re-measured against whatever tags are actually mounted, both in
-        # any official sim world and on the real robot. Park at a tape-measured
-        # distance and run solutions/test_assets/calibrate_tag_size.py, which prints
-        # the corrected value directly.
-        size: 0.6
+        # 0.165 is the organisers' published figure for the real arena: tag36h11,
+        # 16.5 cm x 16.5 cm, mounted about 1 m above the floor (PARC 2026 phase-réelle
+        # guide). Confirm on the robot anyway - park at a tape-measured distance and
+        # run solutions/test_assets/calibrate_tag_size.py, which prints the corrected
+        # value directly. If the printed value disagrees with 0.165, the printed one
+        # wins: it is measured through the actual lens and the actual print.
+        #
+        # Simulation fixtures must be driven at their own size, not this one. Pass
+        # --tag-size to test_assets/synthetic_tag_publisher.py rather than editing
+        # here, so this file always states what the competition will actually mount.
+        size: 0.165
         max_hamming: 0
         qos_profile: default
 

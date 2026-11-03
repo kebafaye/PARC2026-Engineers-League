@@ -380,7 +380,11 @@ global_costmap:
         # sensor-range-limited obstacle layers cannot provide, and it needs no C++
         # costmap plugin.
         plugin: "nav2_costmap_2d::StaticLayer"
-        map_topic: /parc/evidence_map
+        # /map, not a name of our own, so the one tuned parameter file serves both
+        # bring-ups: in simulation evidence_map.py is pointed at /map by the launch
+        # file, and on the real robot slam_toolbox publishes /map natively. Having two
+        # copies of this file drift apart is a worse failure than the indirection.
+        map_topic: /map
         # The map is latched (transient local), so the layer gets the current one the
         # moment it subscribes instead of waiting for the next publication.
         map_subscribe_transient_local: True

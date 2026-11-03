@@ -93,7 +93,10 @@ def generate_launch_description():
         executable="evidence_map.py",
         name="evidence_map",
         output="screen",
-        parameters=[{"use_sim_time": use_sim_time}],
+        # Publishes on /map, the topic nav2_params.yaml's static layer reads. The same
+        # slot is filled by slam_toolbox in slam_navigation.launch.py, which is how one
+        # parameter file serves both the simulation and the real robot.
+        parameters=[{"use_sim_time": use_sim_time, "map_topic": "/map"}],
     )
 
     start_speed_governor = Node(
