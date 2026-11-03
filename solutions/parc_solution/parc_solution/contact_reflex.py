@@ -80,3 +80,67 @@ def build_backup_goal():
     goal.speed = BACKOFF_SPEED_MS
     goal.time_allowance = Duration(sec=int(BACKOFF_TIME_ALLOWANCE_S))
     return goal
+
+
+# Below this the robot is not meaningfully moving. Wheel odometry on a stalled
+# differential drive still reports small nonzero values as the wheels creep and slip.
+STALL_SPEED = 0.03          # m/s and rad/s
+STALL_PATIENCE_S = 3.0      # how long that must persist while Nav2 is driving
+STALL_COOLDOWN_S = 8.0      # one shove is one event, not one per cycle
+
+
+class StallDetector:
+    """Contact detection for a robot with no bumpers.
+
+    COLLISION_TOPICS above are Gazebo contact sensors. The real Sito-É publishes
+    nothing of the kind - checked against the organisers' own topic dump - so on the
+    robot the reflex those topics feed would simply never fire, and the run would
+    drive into furniture with no protection at all. Each contact costs 2 to 5 of the
+    20 safe-navigation points.
+
+    What every robot does have is odometry. If Nav2 is driving and the wheels report
+    nothing moving, something is stopping the robot, and on this course that is
+    almost always furniture. That is exactly the state the tip-over happened in:
+    the controller logged "Failed to make progress" while the robot leaned on
+    cafe_table_6 for a minute and a half.
+
+    Deliberately biased towards firing. A false positive costs one unnecessary
+    backoff, a second or two; a false negative costs points and possibly the robot.
+    Nav2's own `wait` recovery will trip it occasionally - backing off from a wait is
+    harmless.
+
+    Pure and side-effect free so it can be exercised without a robot; the node feeds
+    it odometry and whether a goal is currently active.
+    """
+
+    def __init__(self, speed_floor=STALL_SPEED, patience_s=STALL_PATIENCE_S,
+                 cooldown_s=STALL_COOLDOWN_S):
+        self.speed_floor = speed_floor
+        self.patience_s = patience_s
+        self.cooldown_s = cooldown_s
+        self.stalled_since = None
+        self.last_event_s = None
+
+    def update(self, now_s, linear, angular, navigating):
+        """True exactly once per stall. `linear`/`angular` are odometry twists."""
+        if not navigating:
+            self.stalled_since = None
+            return False
+
+        moving = abs(linear) > self.speed_floor or abs(angular) > self.speed_floor
+        if moving:
+            self.stalled_since = None
+            return False
+
+        if self.stalled_since is None:
+            self.stalled_since = now_s
+            return False
+        if now_s - self.stalled_since < self.patience_s:
+            return False
+
+        if self.last_event_s is not None and now_s - self.last_event_s < self.cooldown_s:
+            return False
+
+        self.last_event_s = now_s
+        self.stalled_since = None
+        return True

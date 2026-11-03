@@ -135,11 +135,26 @@ Par ordre d'importance. Les trois premiers peuvent invalider la solution entièr
    RealSense du robot publient plus haute résolution, la portée augmente d'autant —
    à mesurer, parce que la stratégie d'exploration en dépend directement.
 
-4. **Les contacts.** Le réflexe écoute des capteurs de choc **simulés** qui n'existent
-   pas ici : sur le robot, `tag_goal_bridge` démarre sans eux et roule donc **sans
-   protection**. Chaque contact coûte 2 à 5 points. Source réelle à trouver
-   (caméras de profondeur, `/collision_obstacles`, ou l'IMU).
+4. **Le topic d'odométrie.** C'est lui qui protège le robot réel des contacts. Les
+   capteurs de choc du réflexe sont simulés et n'existent pas ici ; à leur place, un
+   détecteur de blocage compare « Nav2 commande » à « les roues tournent ». Par
+   défaut il lit `/odom` — si le robot publie `/botwheel_explorer/odom`, le passer
+   en paramètre :
 
-5. **La hauteur du LiDAR.** Il est à ~4,8 cm du sol : il voit les pieds de table,
+   ```bash
+   ros2 run parc_solution tag_goal_bridge.py --ros-args \
+     -p odom_topic:=/botwheel_explorer/odom
+   ```
+
+   Sans le bon topic, il ne verra jamais rien et le robot roulera sans protection,
+   à 2 à 5 points par contact.
+
+5. **Les scans des caméras de profondeur.** Le robot publie `/camera1/scan` et
+   `/camera2/scan`, qui voient ce que le LiDAR ne voit pas. Les ajouter à la couche
+   d'obstacles de `nav2_params.yaml` ferait éviter les plateaux de table *avant* de
+   les toucher, au lieu de réagir après. Pas encore fait, faute de pouvoir le tester
+   ici — c'est la meilleure amélioration restante si un créneau le permet.
+
+6. **La hauteur du LiDAR.** Il est à ~4,8 cm du sol : il voit les pieds de table,
    jamais un plateau à 0,75 m. Seules les caméras de profondeur voient ce qui dépasse.
    À garder en tête en regardant la carte construite.

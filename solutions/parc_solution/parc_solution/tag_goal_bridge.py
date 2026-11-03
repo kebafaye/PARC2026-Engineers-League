@@ -50,10 +50,13 @@ from std_msgs.msg import Int32
 
 # Contact detection and the backoff that follows it are shared with
 # task_solution.py; see contact_reflex.py for why each value is what it is.
+from nav_msgs.msg import Odometry
+
 from parc_solution.contact_reflex import (
     BACKOFF_TIME_ALLOWANCE_S,
     COLLISION_TOPICS,
     Contacts,
+    StallDetector,
     build_backup_goal,
     is_new_contact,
 )
@@ -118,15 +121,47 @@ class TagGoalBridge(Node):
         )
         self.create_subscription(Int32, "/parc/go_to_tag_id", self.on_tag_request, 10)
 
+        sensor_qos = QoSProfile(depth=10)
+        sensor_qos.reliability = ReliabilityPolicy.BEST_EFFORT
+
         if Contacts is not None:
-            sensor_qos = QoSProfile(depth=10)
-            sensor_qos.reliability = ReliabilityPolicy.BEST_EFFORT
             for topic in COLLISION_TOPICS:
                 self.create_subscription(
                     Contacts, topic, self.make_contact_callback(topic), sensor_qos
                 )
 
+        # Odometry-based stall detection, which is what protects the REAL robot: the
+        # bumper topics above are Gazebo-only, so without this a race would drive
+        # into furniture with nothing watching. Runs alongside the bumpers rather
+        # than instead of them - in simulation both feed the same counter, and
+        # whichever notices first triggers the same backoff.
+        self.declare_parameter("odom_topic", "/odom")
+        self.stall = StallDetector()
+        self.create_subscription(
+            Odometry,
+            self.get_parameter("odom_topic").value,
+            self.on_odom,
+            sensor_qos,
+        )
+
         self.get_logger().info("Ready. Publish a tag ID on /parc/go_to_tag_id to drive to it.")
+
+    def on_odom(self, msg):
+        """Count a stall as a contact: same counter, same reflex downstream.
+
+        `navigating` is the live goal, so a robot parked between tags or spinning
+        for the camera is never flagged - only one that Nav2 is actively trying to
+        move and that is not moving.
+        """
+        navigating = self.result_future is not None and not self.result_future.done()
+        now_s = self.get_clock().now().nanoseconds / 1e9
+        twist = msg.twist.twist
+        if self.stall.update(now_s, twist.linear.x, twist.angular.z, navigating):
+            self.contacts += 1
+            self.get_logger().warn(
+                f"Contact #{self.contacts} : blocage détecté à l'odométrie "
+                "(Nav2 commande, les roues ne tournent pas)."
+            )
 
     def make_contact_callback(self, topic):
         def callback(msg):
