@@ -82,6 +82,43 @@ Le nœud annonce le verdict selon les deux critères du règlement :
 VISITE VALIDE - tag36h11:4: 0.38 m (limite 0.50), desalignement 4.5 deg (limite 12)
 ```
 
+## La course complète, avec l'arbitre
+
+`race_director` parle les cinq topics `/parc/` ; il lit l'ordre, explore, approche,
+signale chaque visite avec une photo, et s'arrête quand l'arbitre le dit.
+
+```bash
+# 4e terminal - APRÈS que les juges aient armé la course
+ros2 run parc_solution race_director.py                 # départ par commande
+ros2 run parc_solution race_director.py --voice         # départ au mot (bonus)
+```
+
+Le robot ne bouge pas tant que le départ n'est pas envoyé : en état `ARMED`, tout
+mouvement est un faux départ.
+
+**Le topic caméra doit être le bon**, sinon les visites partent sans photo. Par
+défaut `/top_camera_color/image_raw/compressed` ; sur le robot, vérifier avec
+`ros2 topic list | grep compressed` et sinon :
+
+```bash
+ros2 run parc_solution race_director.py --ros-args \
+  -p camera_topic:=/camera1/camera1/color/image_raw/compressed
+```
+
+Répétition sans arbitre réel — à faire au moins une fois avant le créneau :
+
+```bash
+python3 test_assets/fake_referee.py --order 7,1,9,4 --limit 240
+```
+
+Il rejoue les cinq topics avec la bonne QoS et applique les mêmes règles
+(la course démarre à la réception du départ, le dernier tag la termine).
+
+⚠️ **Ne jamais déployer `test_assets/parc_msgs/`.** C'est une copie locale des
+messages, transcrite du document d'arbitrage pour pouvoir tester hors robot. Le vrai
+paquet est dans l'espace de travail de base du robot, et une copie périmée qui le
+masquerait casserait tous les topics.
+
 ## Démarrage vocal (+5 points, facultatif)
 
 Hors ligne, sur le robot, via le réseau 4 micros ReSpeaker. À installer **pendant un

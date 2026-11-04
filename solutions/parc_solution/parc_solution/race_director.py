@@ -19,13 +19,19 @@ So the position in the order is a pointer that only ever moves forward. Giving u
 a tag costs 20 points; going back for it costs every point after it. When the budget
 runs short the right move is to abandon the current tag, not to keep hunting.
 
-Two things the organisers have not published yet
-------------------------------------------------
-The topic carrying the tag order, and the status package to report visits on, are
-both "details to follow". Every name and type involved is therefore a ROS parameter
-with a documented default, so adapting is an edit to a launch argument rather than
-to this file. `--order` also lets the whole race be rehearsed before any of it is
-known.
+Talking to the referee
+----------------------
+All five /parc/ topics live in referee.py. Three of its obligations shape this file
+rather than that one:
+
+  * While the referee says ARMED, the robot must not move - any motion before the
+    start signal is a false start. So nothing is commanded until the signal is sent.
+  * Reporting the last tag in the order ends the run by itself. Finish is published
+    only when tags were skipped and that last tag will never be reported.
+  * The referee's clock is the only one that counts. Our own budget paces the search;
+    run_status.elapsed_s decides whether time is left.
+
+`--order` and `--budget` still allow a dry run with no referee present.
 """
 import math
 import sys
@@ -34,8 +40,9 @@ import time
 
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
-from std_msgs.msg import Int32MultiArray, String
+from std_msgs.msg import String
 
+from parc_solution.referee import Referee
 from parc_solution.tag_explorer import TagExplorer
 from parc_solution.tag_goal_bridge import TagGoalBridge
 
@@ -56,11 +63,13 @@ MAX_SHARE_PER_TAG = 0.5
 # that does not qualify scores exactly the same as not going at all.
 MIN_APPROACH_S = 25.0
 
-# Defaults for the two interfaces the organisers have not specified. Overridable as
-# ROS parameters - see the module docstring.
-DEFAULT_ORDER_TOPIC = "/parc/tag_order"
+# Our own voice node publishes the word it heard here; the referee is told about it
+# through StartSignal.heard, which is what earns the bonus.
+DEFAULT_VOICE_TOPIC = "/parc/start_race"
 DEFAULT_STATUS_TOPIC = "/parc/race_status"
-DEFAULT_START_TOPIC = "/parc/start_race"
+
+# The camera stream whose JPEG goes with every visit report.
+DEFAULT_CAMERA_TOPIC = "/top_camera_color/image_raw/compressed"
 
 
 class RaceDirector:
@@ -70,21 +79,16 @@ class RaceDirector:
         self.node = node
         self.log = node.get_logger()
 
-        node.declare_parameter("order_topic", DEFAULT_ORDER_TOPIC)
+        node.declare_parameter("voice_topic", DEFAULT_VOICE_TOPIC)
         node.declare_parameter("status_topic", DEFAULT_STATUS_TOPIC)
-        node.declare_parameter("start_topic", DEFAULT_START_TOPIC)
+        node.declare_parameter("camera_topic", DEFAULT_CAMERA_TOPIC)
 
+        self.referee = Referee(node, node.get_parameter("camera_topic").value)
         self.order = None
-        self.started = False
+        self.heard = None
 
         node.create_subscription(
-            Int32MultiArray,
-            node.get_parameter("order_topic").value,
-            self.on_order,
-            10,
-        )
-        node.create_subscription(
-            String, node.get_parameter("start_topic").value, self.on_start, 10
+            String, node.get_parameter("voice_topic").value, self.on_voice, 10
         )
         self.status_pub = node.create_publisher(
             String, node.get_parameter("status_topic").value, 10
@@ -92,13 +96,13 @@ class RaceDirector:
 
     # ------------------------------------------------------------------ inputs
 
-    def on_order(self, msg):
-        if self.order is None:
-            self.order = list(msg.data)
-            self.log.info(f"Ordre reçu : {self.order}")
-
-    def on_start(self, msg):
-        self.started = True
+    def on_voice(self, msg):
+        """The start word, from voice_start.py. Recorded rather than acted on: the
+        referee wants it inside StartSignal, and the bonus depends on it arriving
+        there rather than on the robot simply moving."""
+        if self.heard is None:
+            self.heard = msg.data
+            self.log.info(f"Mot de départ entendu : {self.heard!r}")
 
     def report(self, text):
         """Everything the judges and the team need to follow the run, in one place.
@@ -123,22 +127,44 @@ class RaceDirector:
             time.sleep(0.2)
         return rclpy.ok()
 
-    def run(self, order=None, wait_start=True, budget_s=RACE_BUDGET_S):
+    def run(self, order=None, wait_start=True, budget_s=RACE_BUDGET_S, voice=False):
+        # The order comes from the referee, latched when the judges arm the run.
         if order is not None:
             self.order = order
             self.log.info(f"Ordre fourni en ligne de commande : {self.order}")
-        elif not self.wait_for(lambda: self.order is not None, "l'ordre des tags"):
-            return 1
+        else:
+            if not self.wait_for(
+                lambda: self.referee.order is not None, "l'ordre de l'arbitre"
+            ):
+                return 1
+            self.order = self.referee.order
 
-        if wait_start and not self.wait_for(lambda: self.started, "le signal de départ"):
-            return 1
+        # ARMED means the judges are ready and the robot must stay perfectly still:
+        # moving now is a false start. Nothing below commands anything until the
+        # start signal has gone out.
+        if wait_start:
+            what = "le mot de départ" if voice else "le signal de départ"
+            if not self.wait_for(
+                lambda: (self.heard is not None) if voice else self.referee.armed(),
+                what,
+            ):
+                return 1
+
+        self.referee.send_start(heard=self.heard if voice else None)
 
         started_at = time.time()
         self.report(f"DEPART - ordre {self.order}, budget {budget_s:.0f} s")
 
         visited, skipped = [], []
         for position, tag_id in enumerate(self.order):
-            remaining = budget_s - (time.time() - started_at)
+            if self.referee.over():
+                self.report(f"Arbitre : {self.referee.state_name()} - on s'arrête.")
+                skipped.extend(self.order[position:])
+                break
+
+            # The referee's clock is authoritative; ours only paces the search when
+            # no referee is present.
+            remaining = self.referee.remaining_s(budget_s - (time.time() - started_at))
             ahead = len(self.order) - position
             if remaining <= 0:
                 self.report("Temps écoulé.")
@@ -151,14 +177,32 @@ class RaceDirector:
                 f"{remaining:.0f} s restantes, {budget:.0f} s allouées."
             )
 
-            if self.visit(tag_id, budget, remaining):
+            reached, qualified = self.visit(tag_id, budget, remaining)
+
+            if reached:
+                # Report whatever we reached, qualifying by our own reckoning or not.
+                # The document is explicit that "whether a visit scores is decided by
+                # the judges" - so our verdict is advice, not a gate. Staying silent
+                # about a stop we measured at 13 deg guarantees zero; reporting it
+                # costs nothing and might be judged inside the limit. Only a tag we
+                # never drove to goes unreported.
+                self.referee.report_visit(tag_id)
                 visited.append(tag_id)
-                self.report(f"TAG {tag_id} VISITE.")
+                self.report(
+                    f"TAG {tag_id} SIGNALE"
+                    + ("." if qualified else " (hors tolérance selon nous - aux juges de trancher).")
+                )
             else:
                 # Forward only. Coming back for this one would void every tag after
                 # it, which costs far more than the 20 points being left here.
                 skipped.append(tag_id)
                 self.report(f"TAG {tag_id} ABANDONNE - on passe au suivant.")
+
+        # Reporting the last tag of the order ends the run on its own. Finish is for
+        # the other case: tags were skipped, so that last report will never come and
+        # the clock would otherwise run to the full ten minutes.
+        if self.order and self.order[-1] not in visited and not self.referee.over():
+            self.referee.send_finish(completed=False)
 
         elapsed = time.time() - started_at
         self.report(
@@ -173,7 +217,11 @@ class RaceDirector:
         return min(fair_share, remaining * MAX_SHARE_PER_TAG)
 
     def visit(self, tag_id, budget_s, remaining_s):
-        """Find the tag if needed, drive to it, and say whether the stop counted.
+        """Find the tag if needed and drive to it.
+
+        Returns (reached, qualified): whether an approach was actually carried out,
+        and whether our own measurement puts the stop inside the rules. The caller
+        reports on `reached` and merely logs `qualified` - the judges score it.
 
         The budget gates *searching*, not *going*. A tag already in the cache is
         worth driving to with whatever is left on the clock - the offline check
@@ -184,9 +232,9 @@ class RaceDirector:
         if tag_id not in self.bridge.tag_cache:
             if budget_s <= 0:
                 self.log.warn(f"Pas de temps pour chercher le tag {tag_id}.")
-                return False
+                return False, False
             if not self.explorer.explore(tag_id, budget_s=budget_s):
-                return False
+                return False, False
 
             # explore() returns on the *detection*; the pose reaches the bridge's
             # cache through its own /detections callback, a beat behind.
@@ -194,19 +242,22 @@ class RaceDirector:
                 lambda: tag_id in self.bridge.tag_cache, f"la pose du tag {tag_id}", 10.0
             ):
                 self.log.warn(f"Tag {tag_id} vu mais sans pose exploitable.")
-                return False
+                return False, False
 
         if remaining_s < MIN_APPROACH_S:
             self.log.warn(
                 f"Tag {tag_id} connu mais il reste {remaining_s:.0f} s - trop court "
                 "pour l'atteindre."
             )
-            return False
+            return False, False
 
-        # Leave the endgame reserve intact for the tags behind this one.
-        return self.bridge.handle_request(
+        # Leave the endgame reserve intact for the tags behind this one. The
+        # approach always ends with the robot stopped at wherever it got to, so
+        # `reached` is True regardless of the verdict.
+        qualified = self.bridge.handle_request(
             tag_id, budget_s=max(MIN_APPROACH_S, remaining_s - ENDGAME_RESERVE_S)
         )
+        return True, qualified
 
 
 def main(args=None):
@@ -237,10 +288,12 @@ def main(args=None):
     if "--order" in sys.argv:
         order = [int(x) for x in sys.argv[sys.argv.index("--order") + 1].split(",")]
     wait_start = "--no-wait-start" not in sys.argv
+    voice = "--voice" in sys.argv
 
     code = 1
     try:
-        code = director.run(order=order, wait_start=wait_start, budget_s=budget)
+        code = director.run(order=order, wait_start=wait_start,
+                            budget_s=budget, voice=voice)
     except KeyboardInterrupt:
         pass
     finally:
