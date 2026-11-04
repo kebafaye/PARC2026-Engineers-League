@@ -3,6 +3,111 @@
 Ce que l'équipe installe et lance sur le robot, et ce qui reste au vestiaire.
 Le règlement demande ces instructions au gel du code.
 
+---
+
+## Déroulé d'un créneau — à suivre dans l'ordre
+
+Les créneaux font 15 minutes. L'ordre ci-dessous place en premier ce qui peut
+invalider tout le reste : inutile de régler quoi que ce soit avant de savoir si les
+topics portent les noms attendus.
+
+### Avant d'arriver (pas dans le créneau)
+
+```bash
+cd ~/PAN/ros2_ws/src/solutions
+tar czf /tmp/parc_solution.tgz parc_solution      # 1,2 Mo
+```
+
+### Créneau 1 — faire tourner, et lever les inconnues
+
+**1. Se connecter** (Wi-Fi `Flybox_ED67`)
+
+```bash
+scp /tmp/parc_solution.tgz sitoe@192.168.1.126:~/
+ssh sitoe@192.168.1.126
+```
+
+**2. Déposer et construire** — par-dessus l'espace de base, sans jamais le modifier
+
+```bash
+mkdir -p ~/kebafaye/ros2_ws/src && cd ~/kebafaye/ros2_ws/src
+tar xzf ~/parc_solution.tgz
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash          # base du robot (contient parc_msgs)
+cd ~/kebafaye/ros2_ws
+colcon build --packages-select parc_solution --symlink-install
+source install/setup.bash
+```
+
+Si `colcon` se plaint de dépendances manquantes, voir *Dépendances système* plus bas
+et **demander à un organisateur** de les installer.
+
+**3. LE point décisif — les noms de topics**
+
+```bash
+ros2 topic list | grep -E "scan|odom|image_raw|camera_info|cmd_vel"
+```
+
+Comparer à ce que la solution attend par défaut :
+
+| Rôle | Attendu par défaut | Si différent |
+|---|---|---|
+| LiDAR | `/scan` | remapper à l'entrée de `scan_filter` |
+| Odométrie | `/odom` | `-p odom_topic:=…` sur `tag_goal_bridge` |
+| Image couleur | `/top_camera_color/image_raw` | remapper dans `apriltag_detection.launch.py` |
+| `camera_info` | `/top_camera_color/camera_info` | idem |
+| JPEG pour l'arbitre | `/top_camera_color/image_raw/compressed` | `-p camera_topic:=…` sur `race_director` |
+
+**4. Lancer la pile et vérifier la localisation**
+
+```bash
+ros2 launch parc_solution slam_navigation.launch.py use_sim_time:=False
+```
+
+Attendre `Managed nodes are active`, puis dans un second terminal :
+
+```bash
+ros2 run tf2_ros tf2_echo map odom      # doit afficher une transformée
+ros2 topic hz /map                      # doit publier
+```
+
+Si `map` n'existe pas, `slam_toolbox` n'est pas activé — c'est un nœud à cycle de
+vie, le `lifecycle_manager` du lanceur s'en charge, laisser quelques secondes.
+
+**5. Détection des tags**
+
+```bash
+ros2 launch parc_solution apriltag_detection.launch.py
+ros2 topic echo /detections --once      # placer un tag devant le robot
+```
+
+### Créneau 2 — calibrer et répéter
+
+**6. Calibrer la taille du tag** — mètre ruban, distance connue
+
+```bash
+python3 ~/kebafaye/.../test_assets/calibrate_tag_size.py \
+  --true-distance 1.50 --declared-size 0.165
+```
+
+Si la valeur imprimée diffère de 0,165, **c'est elle qui gagne** : la mettre dans
+`config/apriltag_tags.yaml` et reconstruire.
+
+**7. Mesurer la portée réelle** — reculer jusqu'à ce que `/detections` se vide. Noter
+la distance : la stratégie d'exploration en dépend.
+
+**8. Répétition complète** — demander à un organisateur d'armer une course d'essai
+
+```bash
+ros2 topic echo /parc/tag_order --qos-durability transient_local   # l'ordre
+ros2 topic echo /parc/run_status                                   # garder ouvert
+ros2 run parc_solution race_director.py                            # la course
+```
+
+Vérifier sur http://192.168.1.126:8080/ que les visites arrivent **avec image**.
+
+---
+
 ## Ce qu'on déploie
 
 Un seul paquet : **`parc_solution`**. Le copier dans le dossier de l'équipe sur le
