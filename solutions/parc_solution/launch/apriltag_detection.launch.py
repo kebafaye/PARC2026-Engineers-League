@@ -35,6 +35,21 @@ def generate_launch_description():
     )
     tag_size = LaunchConfiguration("tag_size")
 
+    # Defaults FALSE, because the real robot is the run that scores and it has no
+    # /clock. This was hardcoded True for both nodes below, which is correct in
+    # simulation and silently fatal on hardware: with use_sim_time true and nothing
+    # publishing /clock, the nodes hold at time zero, every TF they broadcast is
+    # stamped 0, and `map -> tag36h11:<id>` never resolves - while detection itself
+    # looks perfectly healthy. The rehearsal commands in DEPLOY.md therefore pass
+    # use_sim_time:=true explicitly; a wrong value in sim costs a confusing rehearsal,
+    # a wrong value on the robot costs the race.
+    declare_use_sim_time = DeclareLaunchArgument(
+        "use_sim_time",
+        default_value="false",
+        description="true only in simulation, where Gazebo publishes /clock.",
+    )
+    use_sim_time = LaunchConfiguration("use_sim_time")
+
     # use_sim_time matters here specifically because tag_goal_bridge.py composes TF
     # across this pipeline's output (camera -> tag) with world_anchor's and
     # robot_state_publisher's (map -> ... -> camera), which both stamp in sim time.
@@ -70,7 +85,7 @@ def generate_launch_description():
         package="image_proc",
         executable="rectify_node",
         name="rectify_top_camera",
-        parameters=[{"use_sim_time": True}],
+        parameters=[{"use_sim_time": use_sim_time}],
         remappings=[
             ("image", "/camera1/camera1/color/image_raw"),
             ("camera_info", "/camera1/camera1/color/camera_info"),
@@ -82,7 +97,7 @@ def generate_launch_description():
         package="apriltag_ros",
         executable="apriltag_node",
         name="apriltag_top_camera",
-        parameters=[tags_yaml, {"use_sim_time": True, "size": tag_size}],
+        parameters=[tags_yaml, {"use_sim_time": use_sim_time, "size": tag_size}],
         # No camera_info remapping: see above, it would do nothing. The pairing is
         # established by where image_rect lives.
         remappings=[("image_rect", RECT_IMAGE)],
@@ -90,6 +105,7 @@ def generate_launch_description():
 
     ld = LaunchDescription()
     ld.add_action(declare_tag_size)
+    ld.add_action(declare_use_sim_time)
     ld.add_action(rectify_top_camera)
     ld.add_action(apriltag_top_camera)
     return ld

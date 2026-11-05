@@ -229,7 +229,7 @@ ros2 launch parc_referee referee.launch.py odom_topic:=/botwheel_explorer/odom
 
 # 3 + 4 - notre pile
 ros2 launch parc_solution slam_navigation.launch.py
-ros2 launch parc_solution apriltag_detection.launch.py
+ros2 launch parc_solution apriltag_detection.launch.py use_sim_time:=true
 
 # armer une course sans passer par l'interface web
 curl -X POST http://localhost:8080/api/judge/arm \
