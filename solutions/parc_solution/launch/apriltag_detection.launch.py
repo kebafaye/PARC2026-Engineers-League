@@ -14,6 +14,8 @@ parc_solution/tag_goal_bridge.py for what consumes that.
 import os
 
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -21,6 +23,17 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     pkg_path = FindPackageShare(package="parc_solution").find("parc_solution")
     tags_yaml = os.path.join(pkg_path, "config/apriltag_tags.yaml")
+
+    # Overridable without rebuilding, because this is the number most likely to be
+    # wrong on the day and the one that scales every reported distance. The default
+    # in apriltag_tags.yaml is measured from the organisers' arena generator; the
+    # printed tags on the physical robot may differ. See that file's comment.
+    declare_tag_size = DeclareLaunchArgument(
+        "tag_size",
+        default_value="0.12",
+        description="Edge of the tag's BLACK SQUARE in metres, not the card.",
+    )
+    tag_size = LaunchConfiguration("tag_size")
 
     # use_sim_time matters here specifically because tag_goal_bridge.py composes TF
     # across this pipeline's output (camera -> tag) with world_anchor's and
@@ -45,7 +58,7 @@ def generate_launch_description():
         package="apriltag_ros",
         executable="apriltag_node",
         name="apriltag_top_camera",
-        parameters=[tags_yaml, {"use_sim_time": True}],
+        parameters=[tags_yaml, {"use_sim_time": True, "size": tag_size}],
         remappings=[
             ("image_rect", "/camera1/color/image_rect"),
             ("camera_info", "/camera1/camera1/color/camera_info"),
@@ -53,6 +66,7 @@ def generate_launch_description():
     )
 
     ld = LaunchDescription()
+    ld.add_action(declare_tag_size)
     ld.add_action(rectify_top_camera)
     ld.add_action(apriltag_top_camera)
     return ld

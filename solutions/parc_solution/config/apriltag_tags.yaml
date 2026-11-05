@@ -13,17 +13,28 @@
         # square turned out to be 0.296 m, reported a tag 2.03x too far away (4.78 m
         # for a true 2.36 m) and sent Nav2 to empty floor well beyond it.
         #
-        # 0.165 is the organisers' published figure for the real arena: tag36h11,
-        # 16.5 cm x 16.5 cm, mounted about 1 m above the floor (PARC 2026 phase-réelle
-        # guide). Confirm on the robot anyway - park at a tape-measured distance and
-        # run solutions/test_assets/calibrate_tag_size.py, which prints the corrected
-        # value directly. If the printed value disagrees with 0.165, the printed one
-        # wins: it is measured through the actual lens and the actual print.
+        # 0.12 is MEASURED from the organisers' own arena generator, and it is NOT
+        # the 0.165 the phase-réelle guide quotes. Two separate reductions get you
+        # there and missing either is a silent distance error:
         #
-        # Simulation fixtures must be driven at their own size, not this one. Pass
-        # --tag-size to test_assets/synthetic_tag_publisher.py rather than editing
-        # here, so this file always states what the competition will actually mount.
-        size: 0.165
+        #   world_generator.py mounts a face of TAG_SIZE = 0.15 m, not 0.165;
+        #   its texture carries a white quiet zone, so the black square is 0.800 of
+        #   that face - checked on tags 1, 4, 7 and 9, identical on all four.
+        #
+        #   0.150 x 0.800 = 0.120 m
+        #
+        # Left at 0.165 the robot believes every tag is 1.37x further than it is: one
+        # truly 0.50 m away reports 0.68 m, the approach pose lands a third of a metre
+        # too far out, and the visit fails the 0.5 m rule while the detection itself
+        # looks flawless.
+        #
+        # ON THE PHYSICAL ROBOT THIS IS STILL UNKNOWN. The guide's 16.5 cm may describe
+        # the printed card rather than the black square, and the print need not match
+        # the generator. Park at a tape-measured distance, run
+        # solutions/test_assets/calibrate_tag_size.py, and take whatever it prints - it
+        # goes through the real lens and the real print. Override without rebuilding:
+        #   ros2 launch parc_solution apriltag_detection.launch.py tag_size:=0.165
+        size: 0.12
         max_hamming: 0
         qos_profile: default
 
