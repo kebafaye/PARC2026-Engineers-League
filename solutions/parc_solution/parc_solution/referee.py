@@ -79,6 +79,7 @@ class Referee:
 
         self.order = None
         self.status = None
+        self._false_start_logged = False
         self.latest_image = None
         self._bridge = CvBridge()
         self._reported = set()
@@ -114,8 +115,18 @@ class Referee:
                 f"({msg.elapsed_s:.0f}/{msg.time_limit_s:.0f} s, "
                 f"reçus {list(msg.tags_reported)})"
             )
-        if msg.false_start:
-            self.log.error("Arbitre : FAUX DÉPART signalé.")
+        # Once, not once per status message. The referee republishes its status
+        # several times a second, and the first version of this logged on every one
+        # of them: a seed 12 run ended with the console showing nothing but FAUX
+        # DÉPART, which buried the explorer output that would have explained what
+        # the robot was actually doing.
+        if msg.false_start and not self._false_start_logged:
+            self._false_start_logged = True
+            self.log.error(
+                "Arbitre : FAUX DÉPART - le robot a bougé pendant l'état ARMED. "
+                "L'arbitre ne démarrera pas son chronomètre. Immobiliser le robot, "
+                "puis demander aux juges un reset et un nouvel armement."
+            )
 
     def _on_image(self, msg):
         self.latest_image = msg
@@ -160,6 +171,18 @@ class Referee:
 
     def running(self):
         return self.status is not None and self.status.state == RunStatus.RUNNING
+
+    def started(self):
+        """True once the referee's own clock is running - the only start that counts.
+
+        Terminal states count as started so a run that ends between our sending the
+        start and our checking is not mistaken for one that never began. What this
+        must NOT accept is a referee still sitting in ARMED: that is what a false
+        start looks like, and driving then scores nothing.
+        """
+        if self.status is None:
+            return False
+        return self.status.state == RunStatus.RUNNING or self.over()
 
     def over(self):
         """True once the referee says to stop, whatever we were doing."""

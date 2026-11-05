@@ -39,6 +39,7 @@ def generate_launch_description():
     container_name_full = (namespace, '/', container_name)
     use_respawn = LaunchConfiguration('use_respawn')
     log_level = LaunchConfiguration('log_level')
+    cmd_vel_out_topic = LaunchConfiguration('cmd_vel_out_topic')
 
     lifecycle_nodes = [
         'controller_server',
@@ -137,6 +138,16 @@ def generate_launch_description():
         'log_level', default_value='info', description='log level'
     )
 
+    # Where the velocity chain finally delivers. Worth an argument rather than a
+    # hardcoded name because getting it wrong is completely silent - see the comment
+    # on the collision_monitor node below.
+    declare_cmd_vel_out_cmd = DeclareLaunchArgument(
+        'cmd_vel_out_topic',
+        default_value='/cmd_vel',
+        description='Topic the robot actually drives from. /cmd_vel for the official '
+                    'phase 2 simulator and, per the organisers, the real Sito-E.',
+    )
+
     load_nodes = GroupAction(
         condition=IfCondition(PythonExpression(['not ', use_composition])),
         actions=[
@@ -223,8 +234,32 @@ def generate_launch_description():
                 # Remapping cmd_vel globally instead would also catch the
                 # controller's output and short-circuit the smoother and the
                 # collision monitor entirely.
-                remappings=remappings
-                + [('cmd_vel', '/robot_base_controller/cmd_vel_unstamped')],
+                #
+                # This used to be hardcoded to /robot_base_controller/cmd_vel_unstamped,
+                # which was right for the Phase 1 bring-up and its ros2_control diff
+                # drive. The official phase 2 simulator has no such controller: a
+                # ros_gz_bridge subscribes to /cmd_vel instead. So the last link
+                # delivered every command to a topic with no subscriber, and the robot
+                # never moved a millimetre - through four tag budgets, 600 s, on seed 12.
+                #
+                # Nothing in any log says so. `ros2 topic info` is the only thing that
+                # does, and it says it plainly:
+                #
+                #   /robot_base_controller/cmd_vel_unstamped  Subscription count: 0
+                #   /cmd_vel                                  Publisher count: 0
+                #
+                # What it looks like instead is a planner problem. Every goal ends
+                # ABORTED because the controller reports no progress, bt_navigator
+                # retries until its own action handshakes start timing out, and that
+                # surfaces as "Timed out while waiting for action server to acknowledge
+                # goal request for compute_path_to_pose" - which reads exactly like a
+                # saturated machine. I spent days reading it that way. ComputePathToPose
+                # called by hand returns SUCCEEDED in well under a second; the planner
+                # was never the problem.
+                #
+                # So: check subscriber counts on the last link before believing any
+                # diagnosis that blames the host.
+                remappings=remappings + [('cmd_vel', cmd_vel_out_topic)],
             ),
             Node(
                 package='nav2_lifecycle_manager',
@@ -320,7 +355,13 @@ def generate_launch_description():
                         plugin='nav2_collision_monitor::CollisionMonitor',
                         name='collision_monitor',
                         parameters=[configured_params],
-                        remappings=remappings,
+                        # Same last-link redirect as the non-composed node above. This
+                        # branch is unused today (we launch with use_composition False)
+                        # but an unremapped collision_monitor here would publish to
+                        # plain /cmd_vel and so happen to work in simulation while
+                        # ignoring cmd_vel_out_topic entirely - a divergence that would
+                        # only show up on the real robot.
+                        remappings=remappings + [('cmd_vel', cmd_vel_out_topic)],
                     ),
                     ComposableNode(
                         package='opennav_docking',
@@ -357,6 +398,7 @@ def generate_launch_description():
     ld.add_action(declare_container_name_cmd)
     ld.add_action(declare_use_respawn_cmd)
     ld.add_action(declare_log_level_cmd)
+    ld.add_action(declare_cmd_vel_out_cmd)
     # Add the actions to launch all of the navigation nodes
     ld.add_action(load_nodes)
     ld.add_action(load_composable_nodes)

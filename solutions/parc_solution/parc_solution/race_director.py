@@ -49,6 +49,12 @@ from parc_solution.tag_goal_bridge import TagGoalBridge
 # Rules: 10 minutes from the start command or the spoken word.
 RACE_BUDGET_S = 600.0
 
+# How long the referee gets to acknowledge our start by leaving ARMED. Generous
+# because the cost of waiting is a few seconds of the slot, while the cost of
+# driving unacknowledged is the whole run - and short enough that an operator who
+# needs to ask the judges for a reset still has time to do it.
+START_CONFIRM_S = 10.0
+
 # Stop hunting with this much left and spend it on the tags still ahead. A tag found
 # with no time to drive to it scores nothing, so the last stretch belongs to whatever
 # is already in the cache.
@@ -152,6 +158,28 @@ class RaceDirector:
                 return 1
 
         self.referee.send_start(heard=self.heard if voice else None)
+
+        # Sending the start is not the same as the referee accepting it, and the
+        # difference is invisible unless you look for it. On a seed 12 run the
+        # referee had already flagged a false start - the robot was still coasting
+        # on a previous goal when the judges armed - so it stayed ARMED, never
+        # started its clock, and recorded nothing. Our side meanwhile drove for
+        # 724 s and reported "tag 7 visité, 25 points", because remaining_s() reads
+        # time_limit_s - elapsed_s and elapsed_s never left 0. Every number we
+        # printed was real; none of it was scored.
+        #
+        # So require the referee to actually leave ARMED before driving anywhere.
+        # Failing here loses a few seconds of the slot; not failing here loses the
+        # whole slot, and looks like success while it does it.
+        if wait_start and not self.wait_for(
+            lambda: self.referee.started(), "la confirmation de départ de l'arbitre",
+            timeout_s=START_CONFIRM_S,
+        ):
+            self.log.error(
+                "L'arbitre n'a pas lancé son chronomètre. Rien de ce qui suivrait "
+                "ne serait compté - on s'arrête ici plutôt que de courir pour rien."
+            )
+            return 1
 
         started_at = time.time()
         self.report(f"DEPART - ordre {self.order}, budget {budget_s:.0f} s")

@@ -17,6 +17,20 @@ slam_toolbox:
     use_map_saver: true
     mode: mapping #localization
 
+    # Without this slam_toolbox never calls createBond(), so nav2_lifecycle_manager
+    # waits for a bond that is never coming, gives up, and logs:
+    #
+    #   Server slam_toolbox was unable to be reached after 4.00s by bond
+    #   Failed to bring up all requested nodes. Aborting bringup.
+    #
+    # which reads like a timing problem and is not one - raising bond_timeout to 20 s
+    # only changed the number in the message. The node itself configures and activates
+    # fine either way, publishes /map, and broadcasts `map -> odom`, so a run proceeds
+    # and looks healthy. What is lost is the watching: after that abort the manager
+    # monitors nothing, and if SLAM dies mid-race Nav2 keeps planning against the last
+    # map it saw with no error anywhere.
+    use_lifecycle_manager: true
+
     # if you'd like to immediately start continuing a map at a given pose
     # or at the dock, but they are mutually exclusive, if pose is given
     # will use pose

@@ -42,6 +42,30 @@ def generate_launch_description():
     # lookups silently fail to resolve despite both halves of the chain existing -
     # measured: `map -> base_footprint` and `camera -> tag36h11:0` both resolved on
     # their own, but `map -> tag36h11:0` did not, until this was added.
+    # The rectified image MUST be published next to the camera_info it belongs to -
+    # hence /camera1/camera1/color/, the robot's own namespace, and not a tidier
+    # /camera1/color/ of our own. AprilTagNode subscribes through
+    # image_transport::CameraSubscriber, which DERIVES the camera_info topic from the
+    # image topic by swapping the last path component. It does not use a camera_info
+    # remapping; passing one is silently ignored.
+    #
+    # With image_rect on /camera1/color/, the detector therefore looked for
+    # /camera1/color/camera_info, which nothing publishes, and reported:
+    #
+    #   Topics '/camera1/color/image_rect' and '/camera1/color/camera_info' do not
+    #   appear to be synchronized. In the last 10s:
+    #     Image messages received:      8
+    #     CameraInfo messages received: 0
+    #     Synchronized pairs:           0
+    #
+    # Zero synchronized pairs means zero detections, ever: without intrinsics paired to
+    # each frame there is no pose to solve. The robot can park squarely in front of a
+    # tag and see nothing, and the only symptom upstream is "tag introuvable" - which
+    # looks like an exploration or camera-coverage problem and is neither. It arrived
+    # with the switch to the official simulator's double-namespaced camera topics: the
+    # inputs above were updated, this output was not.
+    RECT_IMAGE = "/camera1/camera1/color/image_rect"
+
     rectify_top_camera = Node(
         package="image_proc",
         executable="rectify_node",
@@ -50,7 +74,7 @@ def generate_launch_description():
         remappings=[
             ("image", "/camera1/camera1/color/image_raw"),
             ("camera_info", "/camera1/camera1/color/camera_info"),
-            ("image_rect", "/camera1/color/image_rect"),
+            ("image_rect", RECT_IMAGE),
         ],
     )
 
@@ -59,10 +83,9 @@ def generate_launch_description():
         executable="apriltag_node",
         name="apriltag_top_camera",
         parameters=[tags_yaml, {"use_sim_time": True, "size": tag_size}],
-        remappings=[
-            ("image_rect", "/camera1/color/image_rect"),
-            ("camera_info", "/camera1/camera1/color/camera_info"),
-        ],
+        # No camera_info remapping: see above, it would do nothing. The pairing is
+        # established by where image_rect lives.
+        remappings=[("image_rect", RECT_IMAGE)],
     )
 
     ld = LaunchDescription()

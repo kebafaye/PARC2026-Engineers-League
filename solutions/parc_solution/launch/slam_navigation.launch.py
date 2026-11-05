@@ -62,6 +62,17 @@ def generate_launch_description():
         description="slam_toolbox parameter file.",
     )
 
+    # Threaded through because a wrong value here is the single most expensive silent
+    # failure in this stack: every node comes up, Nav2 plans, and the robot simply
+    # never moves. Overridable on the robot without a rebuild:
+    #   ros2 launch parc_solution slam_navigation.launch.py cmd_vel_out_topic:=/cmd_vel
+    declare_cmd_vel_out = DeclareLaunchArgument(
+        "cmd_vel_out_topic",
+        default_value="/cmd_vel",
+        description="Topic the robot drives from. Confirm with `ros2 topic info "
+                    "<topic>` that it has a subscriber before trusting a run.",
+    )
+
     # No scan_filter of ours. The robot's own bringup publishes /scan_filtered now -
     # confirmed on the real simulator's topic list - and a second publisher on the
     # same topic would have slam_toolbox matching against two interleaved streams.
@@ -96,6 +107,19 @@ def generate_launch_description():
                 "use_sim_time": use_sim_time,
                 "autostart": True,
                 "node_names": ["slam_toolbox"],
+                # Left at the default. The companion fix is use_lifecycle_manager in
+                # slam_params.yaml - without it slam_toolbox never creates a bond at
+                # all, and no timeout here can help. Confirmed the hard way: raising
+                # this to 20 s only changed the number in the error message.
+                #
+                #   Server slam_toolbox was unable to be reached after 20.00s by bond
+                #   Failed to bring up all requested nodes. Aborting bringup.
+                #
+                # That abort does not deactivate anything, which is the trap: on the
+                # seed 12 run slam_toolbox stayed `active` and kept publishing /map and
+                # `map -> odom` throughout, so the stack looked healthy. But the manager
+                # had stopped watching, so had SLAM died mid-race nothing would have
+                # noticed and Nav2 would have planned on against a frozen map.
             }
         ],
     )
@@ -117,6 +141,7 @@ def generate_launch_description():
             "params_file": nav2_params_file,
             "autostart": "true",
             "use_composition": "False",
+            "cmd_vel_out_topic": LaunchConfiguration("cmd_vel_out_topic"),
         }.items(),
     )
 
@@ -124,6 +149,7 @@ def generate_launch_description():
     ld.add_action(declare_use_sim_time)
     ld.add_action(declare_nav2_params)
     ld.add_action(declare_slam_params)
+    ld.add_action(declare_cmd_vel_out)
     ld.add_action(start_slam)
     ld.add_action(start_slam_lifecycle_manager)
     ld.add_action(start_speed_governor)
