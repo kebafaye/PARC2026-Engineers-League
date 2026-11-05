@@ -59,6 +59,14 @@ CLEARANCE_M = 0.45
 # it however far it goes.
 MIN_FRONTIER_TRAVEL_M = 1.2
 
+# Don't spin again without having moved at least this far since the last spin: the
+# view is the same and the seconds are not refundable.
+RESWEEP_DISTANCE_M = 0.8
+
+# How many times one search may forget where it has already swept. Uncapped, this
+# loops forever on a map that genuinely holds a single reachable spot.
+MAX_FORGETS = 2
+
 SPIN_TIME_ALLOWANCE_S = 30.0
 GOTO_TIMEOUT_S = 120.0
 GOAL_SEND_ATTEMPTS = 3
@@ -80,6 +88,7 @@ class TagExplorer(Node):
         self.map = None
         self.seen_tags = set()
         self.visited = []          # vantage points already swept, in `map`
+        self.swept_from = None     # where the last spin happened
         self.pending_request = None
 
         map_qos = QoSProfile(depth=1)
@@ -270,12 +279,20 @@ class TagExplorer(Node):
             self.say(f"Tag {target_id} déjà connu.")
             return True
 
-        # Sweep where we stand before driving anywhere: the cheapest look available.
-        self.sweep(deadline - time.time())
+        # Sweep where we stand before driving anywhere: the cheapest look available
+        # - unless we already swept from here. Searching for the next tag starts
+        # wherever the last one ended, so without this check every tag after the
+        # first pays 45 s to re-photograph the identical view.
+        here = self.robot_xy()
+        if here is None or self.swept_from is None or math.hypot(
+            here[0] - self.swept_from[0], here[1] - self.swept_from[1]
+        ) > RESWEEP_DISTANCE_M:
+            self.sweep(deadline - time.time())
         if target_id in self.seen_tags:
             self.say(f"Tag {target_id} trouvé sans se déplacer.")
             return True
 
+        forgets = 0
         while rclpy.ok() and time.time() < deadline:
             # Prefer a vantage point: a sweep from new ground is what actually finds
             # tags. Fall back to a frontier only when the mapped area is too small to
@@ -285,6 +302,26 @@ class TagExplorer(Node):
             if target is None:
                 target = self.pick_frontier()
                 kind = "frontière"
+            if target is None and self.visited and forgets < MAX_FORGETS:
+                # Everything is filtered out as already-swept - but `visited`
+                # accumulates across searches and is never cleared, so by the second
+                # tag of a race every candidate looks stale and the search gives up
+                # without moving. Measured on seed 12: tag 1 used its whole 135 s,
+                # then tags 9, 4 and 7 each died in 45 s - the initial spin and then
+                # "nothing to explore", three budgets thrown away.
+                #
+                # Forgetting is capped, because forgetting without a cap is worse
+                # than not forgetting at all: the first version of this looped on the
+                # single reachable cell, re-offering (-0.19, -1.19) for the whole
+                # budget. If the known map really does hold one spot, the answer is
+                # to stop and let the next tag have the time.
+                forgets += 1
+                self.say(
+                    f"Postes épuisés - on oublie les anciens ({forgets}/{MAX_FORGETS})."
+                )
+                self.visited.clear()
+                target = self.pick_vantage() or self.pick_frontier()
+                kind = "poste d'observation"
             if target is None:
                 self.say("Plus rien à explorer dans la carte connue.")
                 return target_id in self.seen_tags
@@ -333,6 +370,7 @@ class TagExplorer(Node):
             allowance = min(allowance, max(0.0, budget_s))
         if allowance <= 1.0:
             return
+        self.swept_from = self.robot_xy()
         goal = Spin.Goal()
         goal.target_yaw = 2.0 * math.pi
         goal.time_allowance = rclpy.duration.Duration(seconds=allowance).to_msg()
