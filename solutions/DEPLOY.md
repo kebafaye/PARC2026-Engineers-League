@@ -42,21 +42,26 @@ source install/setup.bash
 Si `colcon` se plaint de dépendances manquantes, voir *Dépendances système* plus bas
 et **demander à un organisateur** de les installer.
 
-**3. LE point décisif — les noms de topics**
+**3. Confirmer les noms de topics** — relevés sur le simulateur officiel, qui publie
+ceux du vrai robot. La solution est déjà réglée dessus ; cette étape ne sert qu'à
+vérifier que le robot physique dit la même chose.
 
 ```bash
 ros2 topic list | grep -E "scan|odom|image_raw|camera_info|cmd_vel"
 ```
 
-Comparer à ce que la solution attend par défaut :
+| Rôle | Nom confirmé |
+|---|---|
+| LiDAR | `/scan` et `/scan_filtered` (publié par le robot) |
+| Odométrie | `/botwheel_explorer/odom` |
+| Image + `camera_info` | `/camera1/camera1/color/image_raw` (et `…/camera_info`) |
+| Commande | `/cmd_vel` |
 
-| Rôle | Attendu par défaut | Si différent |
-|---|---|---|
-| LiDAR | `/scan` | remapper à l'entrée de `scan_filter` |
-| Odométrie | `/odom` | `-p odom_topic:=…` sur `tag_goal_bridge` |
-| Image couleur | `/top_camera_color/image_raw` | remapper dans `apriltag_detection.launch.py` |
-| `camera_info` | `/top_camera_color/camera_info` | idem |
-| JPEG pour l'arbitre | `/top_camera_color/image_raw/compressed` | `-p camera_topic:=…` sur `race_director` |
+⚠️ **Aucun topic compressé n'existe** : `referee.py` encode le JPEG lui-même.
+⚠️ **Ne jamais s'abonner à `/sim/…`** — réservé aux tests, interdit en course.
+
+Si un nom diffère sur le robot physique, tout est paramétrable :
+`-p odom_topic:=…`, `-p camera_topic:=…`, ou les remappages du launch de détection.
 
 **4. Lancer la pile et vérifier la localisation**
 
@@ -202,19 +207,41 @@ Le robot ne bouge pas tant que le départ n'est pas envoyé : en état `ARMED`, 
 mouvement est un faux départ.
 
 **Le topic caméra doit être le bon**, sinon les visites partent sans photo. Par
-défaut `/top_camera_color/image_raw/compressed` ; sur le robot, vérifier avec
-`ros2 topic list | grep compressed` et sinon :
+défaut `/camera1/camera1/color/image_raw` (image brute : il n'existe aucun flux
+compressé, `referee.py` encode le JPEG lui-même). Si le robot physique diffère :
 
 ```bash
 ros2 run parc_solution race_director.py --ros-args \
-  -p camera_topic:=/camera1/camera1/color/image_raw/compressed
+  -p camera_topic:=/un/autre/topic/image_raw
 ```
 
-Répétition sans arbitre réel — à faire au moins une fois avant le créneau :
+### Répéter en local avec le simulateur officiel
+
+Depuis la mise à jour du dépôt, l'arène et l'arbitre tournent sur le poste de dev —
+c'est de loin la meilleure répétition disponible :
 
 ```bash
-python3 test_assets/fake_referee.py --order 7,1,9,4 --limit 240
+# 1 - arène (la graine fixe la disposition ; seed:=-1 en tire une au hasard)
+ros2 launch parc_robot_bringup phase2_hard.launch.py seed:=7
+
+# 2 - arbitre, tableau de bord sur http://localhost:8080
+ros2 launch parc_referee referee.launch.py odom_topic:=/botwheel_explorer/odom
+
+# 3 + 4 - notre pile
+ros2 launch parc_solution slam_navigation.launch.py
+ros2 launch parc_solution apriltag_detection.launch.py
+
+# armer une course sans passer par l'interface web
+curl -X POST http://localhost:8080/api/judge/arm \
+     -H 'X-Judge-Token: parc2026' -H 'Content-Type: application/json' \
+     -d '{"team":"kebafaye"}'
+
+# 5 - la course
+ros2 run parc_solution race_director.py
 ```
+
+Changer de graine à chaque essai : la disposition des tags et des obstacles change,
+c'est ce qui révèle les cas que seed 7 ne montre pas.
 
 Il rejoue les cinq topics avec la bonne QoS et applique les mêmes règles
 (la course démarre à la réception du départ, le dernier tag la termine).
