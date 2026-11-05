@@ -35,9 +35,9 @@ def generate_launch_description():
         name="rectify_top_camera",
         parameters=[{"use_sim_time": True}],
         remappings=[
-            ("image", "/top_camera_color/image_raw"),
-            ("camera_info", "/top_camera_color/camera_info"),
-            ("image_rect", "/top_camera_color/image_rect"),
+            ("image", "/camera1/camera1/color/image_raw"),
+            ("camera_info", "/camera1/camera1/color/camera_info"),
+            ("image_rect", "/camera1/color/image_rect"),
         ],
     )
 
@@ -47,8 +47,8 @@ def generate_launch_description():
         name="apriltag_top_camera",
         parameters=[tags_yaml, {"use_sim_time": True}],
         remappings=[
-            ("image_rect", "/top_camera_color/image_rect"),
-            ("camera_info", "/top_camera_color/camera_info"),
+            ("image_rect", "/camera1/color/image_rect"),
+            ("camera_info", "/camera1/camera1/color/camera_info"),
         ],
     )
 

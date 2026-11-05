@@ -19,11 +19,16 @@ from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import Point
 from nav2_msgs.action import BackUp
 
+# Bumper topics. The organisers moved these under /sim/ and said plainly that
+# /sim/ topics are for testing and must not be used in a solution - so nothing in
+# the race path subscribes to them any more. They stay named here because
+# task_solution.py (Phase 1, simulation only) still reads them, and because
+# StallDetector below exists precisely to replace them.
 COLLISION_TOPICS = (
-    "/base_collisions",
-    "/top_chassis_collisions",
-    "/left_wheel_collisions",
-    "/right_wheel_collisions",
+    "/sim/base_collisions",
+    "/sim/top_chassis_collisions",
+    "/sim/left_wheel_collisions",
+    "/sim/right_wheel_collisions",
 )
 
 # The bumper sensors report permanent contact with the restaurant floor, which is not

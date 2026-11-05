@@ -25,8 +25,10 @@ whether time is left.
 """
 import time
 
+import cv2
+from cv_bridge import CvBridge
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import CompressedImage, Image
 
 from parc_msgs.msg import Finish, RunStatus, StartSignal, TagOrder, TagVisit
 
@@ -71,25 +73,26 @@ def event_qos():
 class Referee:
     """The referee interface, attached to a node that owns the spinning."""
 
-    def __init__(self, node, camera_topic="/top_camera_color/image_raw/compressed"):
+    def __init__(self, node, camera_topic="/camera1/camera1/color/image_raw"):
         self.node = node
         self.log = node.get_logger()
 
         self.order = None
         self.status = None
         self.latest_image = None
+        self._bridge = CvBridge()
         self._reported = set()
         self._started = False
 
         node.create_subscription(TagOrder, TOPIC_ORDER, self._on_order, latched_qos())
         node.create_subscription(RunStatus, TOPIC_STATUS, self._on_status, latched_qos())
 
-        # The JPEG that goes with a visit. Subscribing to the camera's own compressed
-        # stream avoids re-encoding: the referee wants a JPEG, and the driver already
-        # publishes one.
-        node.create_subscription(
-            CompressedImage, camera_topic, self._on_image, event_qos()
-        )
+        # The picture that goes with a visit. The robot publishes raw frames only -
+        # checked against the real simulator's topic list, there is no
+        # .../compressed anywhere - so the JPEG the referee asks for has to be
+        # encoded here. The raw frame is kept and compressed at report time rather
+        # than on every frame: this runs maybe four times in a race.
+        node.create_subscription(Image, camera_topic, self._on_image, event_qos())
 
         self.start_pub = node.create_publisher(StartSignal, TOPIC_START, event_qos())
         self.visit_pub = node.create_publisher(TagVisit, TOPIC_VISIT, event_qos())
@@ -116,6 +119,26 @@ class Referee:
 
     def _on_image(self, msg):
         self.latest_image = msg
+
+    def _as_jpeg(self):
+        """The latest frame as the CompressedImage a TagVisit carries, or None."""
+        if self.latest_image is None:
+            return None
+        try:
+            frame = self._bridge.imgmsg_to_cv2(self.latest_image, "bgr8")
+            ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            if not ok:
+                return None
+        except Exception as exc:                       # noqa: BLE001
+            # Never let an encoding problem stop the report going out: a visit with
+            # no picture may still be judged, one never sent certainly is not.
+            self.log.error(f"Encodage JPEG impossible : {exc}")
+            return None
+        out = CompressedImage()
+        out.header = self.latest_image.header
+        out.format = "jpeg"
+        out.data = buf.tobytes()
+        return out
 
     # ------------------------------------------------------------------ queries
 
@@ -195,27 +218,28 @@ class Referee:
             self.log.warn(f"Tag {tag_id} déjà signalé - on ne le renvoie pas.")
             return True
 
-        if self.latest_image is None:
+        jpeg = self._as_jpeg()
+        if jpeg is None:
             # Reported anyway: a visit without a picture may still be judged, while
             # not reporting it certainly scores nothing.
             self.log.error(
                 "Aucune image caméra disponible - visite signalée sans photo. "
-                "Vérifier le topic caméra."
+                "Vérifier le paramètre camera_topic."
             )
 
         self._await_referee(self.visit_pub, TOPIC_VISIT)
         msg = TagVisit()
         msg.header.stamp = self.node.get_clock().now().to_msg()
         msg.tag_id = int(tag_id)
-        if self.latest_image is not None:
-            msg.image = self.latest_image
-            msg.header.frame_id = self.latest_image.header.frame_id
+        if jpeg is not None:
+            msg.image = jpeg
+            msg.header.frame_id = jpeg.header.frame_id
         self.visit_pub.publish(msg)
         self._reported.add(tag_id)
         self.log.info(f"Arbitre : VISITE du tag {tag_id} signalée, immobile {hold_s} s.")
 
         time.sleep(hold_s)
-        return self.latest_image is not None
+        return jpeg is not None
 
     def send_finish(self, completed):
         """End the run early. Not needed when the last tag in the order was reported -

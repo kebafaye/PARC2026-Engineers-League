@@ -68,8 +68,9 @@ MIN_APPROACH_S = 25.0
 DEFAULT_VOICE_TOPIC = "/parc/start_race"
 DEFAULT_STATUS_TOPIC = "/parc/race_status"
 
-# The camera stream whose JPEG goes with every visit report.
-DEFAULT_CAMERA_TOPIC = "/top_camera_color/image_raw/compressed"
+# The camera the visit photo comes from. camera1 is the upper one, and the
+# robot publishes raw frames only - referee.py encodes the JPEG itself.
+DEFAULT_CAMERA_TOPIC = "/camera1/camera1/color/image_raw"
 
 
 class RaceDirector:

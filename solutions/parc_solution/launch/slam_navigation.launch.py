@@ -14,10 +14,9 @@ world_anchor and evidence_map were doing between them:
   /map          an occupancy grid the global costmap's static layer consumes, on the
                 same topic evidence_map.py publishes in the other bring-up
 
-Everything else is unchanged and shared: scan_filter still drops the returns that hit
-the robot's own chassis, speed_governor still raises the ceiling on open floor, and
-Nav2 runs from the same tuned nav2_params.yaml. Nothing here reads a topic the real
-robot does not have.
+Everything else is unchanged and shared: speed_governor still raises the ceiling on
+open floor, and Nav2 runs from the same tuned nav2_params.yaml. Nothing here reads a
+topic the real robot does not have, and nothing publishes one it already provides.
 
 What this costs, and it is worth saying plainly: `map` is no longer the world frame.
 It is wherever the robot happened to start, and it drifts and jumps as the graph is
@@ -63,17 +62,10 @@ def generate_launch_description():
         description="slam_toolbox parameter file.",
     )
 
-    # Must come up before both slam_toolbox and Nav2: slam_params.yaml matches on
-    # /scan_filtered, and the costmaps and collision monitor read it too. Feeding the
-    # raw /scan to the matcher would let the robot's own chassis returns anchor the
-    # map to the robot, which is the one thing scan matching must never do.
-    start_scan_filter = Node(
-        package="parc_solution",
-        executable="scan_filter.py",
-        name="scan_filter",
-        output="screen",
-        parameters=[{"use_sim_time": use_sim_time}],
-    )
+    # No scan_filter of ours. The robot's own bringup publishes /scan_filtered now -
+    # confirmed on the real simulator's topic list - and a second publisher on the
+    # same topic would have slam_toolbox matching against two interleaved streams.
+    # slam_params.yaml still consumes /scan_filtered; it simply comes from them.
 
     # Async, not sync: the sync node blocks the scan callback while it optimises, and
     # on a machine already running Gazebo that shows up as dropped scans. The async
@@ -132,7 +124,6 @@ def generate_launch_description():
     ld.add_action(declare_use_sim_time)
     ld.add_action(declare_nav2_params)
     ld.add_action(declare_slam_params)
-    ld.add_action(start_scan_filter)
     ld.add_action(start_slam)
     ld.add_action(start_slam_lifecycle_manager)
     ld.add_action(start_speed_governor)

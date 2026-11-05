@@ -124,18 +124,11 @@ class TagGoalBridge(Node):
         sensor_qos = QoSProfile(depth=10)
         sensor_qos.reliability = ReliabilityPolicy.BEST_EFFORT
 
-        if Contacts is not None:
-            for topic in COLLISION_TOPICS:
-                self.create_subscription(
-                    Contacts, topic, self.make_contact_callback(topic), sensor_qos
-                )
-
-        # Odometry-based stall detection, which is what protects the REAL robot: the
-        # bumper topics above are Gazebo-only, so without this a race would drive
-        # into furniture with nothing watching. Runs alongside the bumpers rather
-        # than instead of them - in simulation both feed the same counter, and
-        # whichever notices first triggers the same backoff.
-        self.declare_parameter("odom_topic", "/odom")
+        # No bumper subscription at all. The organisers moved those topics under
+        # /sim/ and ruled that /sim/ is for testing only, so the race path cannot
+        # use them even in simulation - which leaves odometry as the sole way to
+        # notice the robot leaning on furniture.
+        self.declare_parameter("odom_topic", "/botwheel_explorer/odom")
         self.stall = StallDetector()
         self.create_subscription(
             Odometry,
