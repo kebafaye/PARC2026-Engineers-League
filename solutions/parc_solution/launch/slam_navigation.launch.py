@@ -31,6 +31,7 @@ from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
@@ -50,22 +51,47 @@ def generate_launch_description():
         description="Gazebo /clock in simulation; set false on the real robot.",
     )
 
+    # Defaults to the REAL robot's parameter files, for the same reason tag_size and
+    # use_sim_time default that way: the physical run is the one that scores.
+    #
+    # The two differ in exactly one thing, the base frame, and it is fatal to get
+    # wrong. The sim's sitoe_core.xacro joins base_footprint to base_link with
+    # rpy="0 0 pi/2" and the DiffDrive plugin drives in base_footprint, so the whole
+    # sim config is pinned to base_footprint - using base_link there made MPPI reason
+    # about forward motion along a sideways axis and produced most of the erratic
+    # driving we chased for days.
+    #
+    # The physical robot has no base_footprint at all. Its /robot_description, read
+    # out of the 2026-11-06 rosbag, declares five links and no more:
+    #   base_link, left_wheel, right_wheel, caster_frontal_wheel, caster_rear_wheel
+    # Pointed at base_footprint there, slam_toolbox never publishes map -> odom,
+    # every Nav2 costmap lookup fails, and nothing plans - with the logs blaming a
+    # missing transform rather than a missing frame.
     declare_nav2_params = DeclareLaunchArgument(
         "nav2_params_file",
-        default_value=os.path.join(pkg_solution, "config", "nav2_params.yaml"),
-        description="Nav2 parameter file - the same one the sim bring-up uses.",
+        default_value=os.path.join(pkg_solution, "config", "nav2_params_real.yaml"),
+        description="Nav2 parameters. Defaults to the real robot (base_link); pass "
+                    "config/nav2_params.yaml in simulation (base_footprint).",
     )
 
     declare_slam_params = DeclareLaunchArgument(
         "slam_params_file",
-        default_value=os.path.join(pkg_solution, "config", "slam_params.yaml"),
-        description="slam_toolbox parameter file.",
+        default_value=os.path.join(pkg_solution, "config", "slam_params_real.yaml"),
+        description="slam_toolbox parameters. Real robot (base_link) by default; "
+                    "pass config/slam_params.yaml in simulation.",
     )
 
     # Threaded through because a wrong value here is the single most expensive silent
     # failure in this stack: every node comes up, Nav2 plans, and the robot simply
     # never moves. Overridable on the robot without a rebuild:
     #   ros2 launch parc_solution slam_navigation.launch.py cmd_vel_out_topic:=/cmd_vel
+    # Where the stamper delivers. Confirmed from the robot's own rosbag.
+    declare_cmd_vel_robot = DeclareLaunchArgument(
+        "cmd_vel_robot_topic",
+        default_value="/botwheel_explorer/cmd_vel",
+        description="TwistStamped topic the physical base obeys.",
+    )
+
     declare_cmd_vel_out = DeclareLaunchArgument(
         "cmd_vel_out_topic",
         default_value="/cmd_vel",
@@ -124,6 +150,30 @@ def generate_launch_description():
         ],
     )
 
+    # Nav2 Jazzy publishes geometry_msgs/Twist and offers no stamped option -
+    # `enable_stamped_cmd_vel` is absent from the collision_monitor,
+    # velocity_smoother and controller_server binaries alike. The physical Sito-E
+    # obeys geometry_msgs/TwistStamped on /botwheel_explorer/cmd_vel: measured
+    # against odometry 0.3 s later in the 2026-11-06 rosbag, that topic tracks what
+    # the wheels did with a mean error of 0.0028, while plain /cmd_vel sits at
+    # 0.5173. So the last link needs a type conversion, not just a rename - and a
+    # type mismatch never errors, it simply never connects.
+    #
+    # Off in simulation, where the Gazebo bridge subscribes to plain Twist.
+    start_cmd_vel_stamper = Node(
+        package="parc_solution",
+        executable="cmd_vel_stamper.py",
+        name="cmd_vel_stamper",
+        output="screen",
+        condition=UnlessCondition(use_sim_time),
+        parameters=[{
+            "use_sim_time": use_sim_time,
+            "in_topic": LaunchConfiguration("cmd_vel_out_topic"),
+            "out_topic": LaunchConfiguration("cmd_vel_robot_topic"),
+            "frame_id": "base_link",
+        }],
+    )
+
     start_speed_governor = Node(
         package="parc_solution",
         executable="speed_governor.py",
@@ -150,8 +200,10 @@ def generate_launch_description():
     ld.add_action(declare_nav2_params)
     ld.add_action(declare_slam_params)
     ld.add_action(declare_cmd_vel_out)
+    ld.add_action(declare_cmd_vel_robot)
     ld.add_action(start_slam)
     ld.add_action(start_slam_lifecycle_manager)
+    ld.add_action(start_cmd_vel_stamper)
     ld.add_action(start_speed_governor)
     ld.add_action(start_navigation)
     return ld

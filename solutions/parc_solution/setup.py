@@ -36,6 +36,7 @@ setup(
             "world_anchor.py = parc_solution.world_anchor:main",
             "evidence_map.py = parc_solution.evidence_map:main",
             "speed_governor.py = parc_solution.speed_governor:main",
+            "cmd_vel_stamper.py = parc_solution.cmd_vel_stamper:main",
             "tag_goal_bridge.py = parc_solution.tag_goal_bridge:main",
             "mission_bridge.py = parc_solution.mission_bridge:main",
             "tag_explorer.py = parc_solution.tag_explorer:main",
