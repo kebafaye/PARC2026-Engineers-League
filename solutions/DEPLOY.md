@@ -5,6 +5,71 @@ Le règlement demande ces instructions au gel du code.
 
 ---
 
+## Ce que le robot réel impose — mesuré dans son propre rosbag
+
+Un enregistrement de 406 s pris sur le Sito-É le 6 nov. 2026 contredit la
+simulation sur trois points. Chacun, seul, suffit à ce que le robot ne bouge pas ou
+ne voie rien. Les défauts du code servent désormais le robot ; c'est `sim.sh` qui
+déclare la simulation.
+
+| | Simulation | Robot réel |
+|---|---|---|
+| Commande | `Twist` → `/cmd_vel` | **`TwistStamped` → `/botwheel_explorer/cmd_vel`** |
+| Repère de base | `base_footprint` | **`base_link`** — l'autre n'existe pas |
+| Caméra des tags | `camera1` | **`camera2`** |
+| Horloge | `/clock` | aucune → `use_sim_time:=False` |
+| Taille du tag | 0,120 m | **0,165 m** (à confirmer au mètre) |
+
+**Pourquoi `camera2`.** Le `/tf_static` du robot donne la géométrie :
+
+```
+base_link -> camera1_link  xyz=(+0.140, 0, 0.530)  rpy=(0, +67°, 0)
+base_link -> camera2_link  xyz=(-0.060, 0, 0.920)  rpy=(0,   0°, 0)
+```
+
+`camera1` est inclinée de 67° vers le bas à 53 cm : son axe touche le sol à 22 cm,
+et un tag à 90 cm lui est invisible **à toute distance**. C'est une caméra
+d'obstacles. `camera2` est horizontale à 92 cm et voit le même tag de 0,5 à 4 m.
+C'est très probablement pourquoi `/detections` a tourné 406 s, publié 260 messages,
+et n'a jamais rien détecté.
+
+**Pourquoi `TwistStamped`.** Les deux topics de commande existent sur le robot.
+Comparés à `/botwheel_explorer/odom` 0,3 s plus tard — ce que les roues ont fait :
+
+```
+/cmd_vel                    Twist         écart moyen 0.5173
+/botwheel_explorer/cmd_vel  TwistStamped  écart moyen 0.0028   ← 180× plus proche
+```
+
+Nav2 Jazzy ne publie que du `Twist` (`enable_stamped_cmd_vel` n'existe dans aucun de
+ses binaires), d'où `cmd_vel_stamper.py`. Un type qui ne correspond pas ne produit
+**aucune erreur** : il ne se connecte simplement jamais.
+
+### ⚠️ Le verrou à lever en premier
+
+Dans ce même enregistrement, `/camera2/camera2/color/image_raw` et son `camera_info`
+comptent **zéro message** : `camera2` ne diffusait que son IMU, flux couleur
+désactivé. Si c'est encore le cas, **aucun réglage de notre côté n'y peut rien** — et
+le problème concerne toutes les équipes, pas une seule.
+
+```bash
+ros2 topic hz /camera2/camera2/color/image_raw
+```
+
+Muet → demander à l'organisation d'activer le flux couleur de `camera2`.
+Dernier recours seulement : `camera:=camera1`, en sachant que la géométrie dit
+qu'elle ne verra rien.
+
+### Deux chiffres encore non vérifiés
+
+1. **`tag_size:=0.165`** vient de mesures sur photographies, pas d'un mètre ruban.
+   `outils/calibrate_tag_size.py` à distance connue tranche.
+2. **La caméra tournait à ~0,8 Hz** dans le bag. À cette cadence le robot traverse
+   le champ d'un tag sans le voir. Mesurer sans rosbag en cours ; si ça se confirme,
+   ralentir les balayages.
+
+---
+
 ## Déroulé d'un créneau — à suivre dans l'ordre
 
 Les créneaux font 15 minutes. L'ordre ci-dessous place en premier ce qui peut
