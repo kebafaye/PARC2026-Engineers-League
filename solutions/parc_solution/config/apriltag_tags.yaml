@@ -13,33 +13,30 @@
         # square turned out to be 0.296 m, reported a tag 2.03x too far away (4.78 m
         # for a true 2.36 m) and sent Nav2 to empty floor well beyond it.
         #
-        # 0.12 is MEASURED from the organisers' own arena generator, and it is NOT
-        # the 0.165 the phase-réelle guide quotes. Two separate reductions get you
-        # there and missing either is a silent distance error:
+        # THE SIMULATOR AND THE PHYSICAL ARENA DO NOT USE THE SAME TAG, and picking
+        # the wrong one is a silent 37% distance error.
         #
-        #   world_generator.py mounts a face of TAG_SIZE = 0.15 m, not 0.165;
-        #   its texture carries a white quiet zone, so the black square is 0.800 of
-        #   that face - checked on tags 1, 4, 7 and 9, identical on all four.
-        #
+        # Simulation - 0.120 m, measured from the organisers' own generator:
+        #   world_generator.py mounts a face of TAG_SIZE = 0.15 m, not 0.165, and its
+        #   texture carries a white quiet zone, so the black square is 0.800 of that
+        #   face - checked on tags 1, 4, 7 and 9, identical on all four.
         #   0.150 x 0.800 = 0.120 m
         #
-        # Left at 0.165 the robot believes every tag is 1.37x further than it is: one
-        # truly 0.50 m away reports 0.68 m, the approach pose lands a third of a metre
-        # too far out, and the visit fails the 0.5 m rule while the detection itself
-        # looks flawless.
+        # Physical arena - 0.165 m. Photographs of the built arena show each tag
+        # printed on a sheet and taped to a plywood board on a wooden post; the black
+        # square spans roughly 76-80% of the sheet's width, which on A4 portrait
+        # (210 mm) gives 160-168 mm. That agrees with the 16.5 cm the phase-reelle
+        # guide quotes and rules out 0.120 for the real run.
         #
-        # ON THE PHYSICAL ROBOT THIS IS STILL UNKNOWN. The guide's 16.5 cm may describe
-        # the printed card rather than the black square, and the print need not match
-        # the generator. Park at a tape-measured distance, run
-        # solutions/test_assets/calibrate_tag_size.py, and take whatever it prints - it
-        # goes through the real lens and the real print. Override without rebuilding:
-        #   ros2 launch parc_solution apriltag_detection.launch.py tag_size:=0.165
-        # NOTE: the launch file passes `size` as a parameter AFTER this file, so this
-        # value only applies when apriltag_node is run without it. Both now default to
-        # the PHYSICAL arena. Photographs of it show each tag printed on a sheet and
-        # taped to plywood, black square ~76-80% of the sheet width - on A4 portrait
-        # that is 160-168 mm, matching the guide's 16.5 cm, not the 0.120 above.
-        # 0.120 remains correct for the SIMULATOR only; sim.sh passes tag_size:=0.12.
+        # The value below is the PHYSICAL one, because the real run is the one that
+        # scores. Simulation must pass tag_size:=0.12 explicitly - sim.sh does. The
+        # launch file passes `size` AFTER this file, so its argument always wins:
+        #   ros2 launch parc_solution apriltag_detection.launch.py tag_size:=0.12
+        #
+        # STILL WORTH MEASURING ON THE DAY: a photograph is not a tape measure, and
+        # the print need not match the guide. Park at a known distance, run
+        # outils/calibrate_tag_size.py - it goes through the real lens and the real
+        # print - and pass whatever it reports.
         size: 0.165
         max_hamming: 0
         qos_profile: default

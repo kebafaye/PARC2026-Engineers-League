@@ -25,9 +25,8 @@ def generate_launch_description():
     tags_yaml = os.path.join(pkg_path, "config/apriltag_tags.yaml")
 
     # Overridable without rebuilding, because this is the number most likely to be
-    # wrong on the day and the one that scales every reported distance. The default
-    # in apriltag_tags.yaml is measured from the organisers' arena generator; the
-    # printed tags on the physical robot may differ. See that file's comment.
+    # wrong on the day and the one that scales every reported distance.
+    #
     # Defaults to the PHYSICAL arena, not the simulator, for the same reason
     # use_sim_time does below: the real run is the one that scores.
     #
