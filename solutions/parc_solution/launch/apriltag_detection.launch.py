@@ -97,7 +97,40 @@ def generate_launch_description():
     # looks like an exploration or camera-coverage problem and is neither. It arrived
     # with the switch to the official simulator's double-namespaced camera topics: the
     # inputs above were updated, this output was not.
-    RECT_IMAGE = "/camera1/camera1/color/image_rect"
+    # WHICH CAMERA. Settled by the robot's own /tf_static, read from the
+    # 2026-11-06 rosbag:
+    #
+    #   base_link -> camera1_link  xyz=(+0.140, 0, 0.530)  rpy=(0, +67deg, 0)
+    #   base_link -> camera2_link  xyz=(-0.060, 0, 0.920)  rpy=(0,   0deg, 0)
+    #
+    # camera1 sits 0.53 m up and is pitched 67 degrees DOWN: its optical axis meets
+    # the floor 0.22 m ahead, and even the top of its frame only reaches ~0.65 m
+    # ahead. A tag on a post at ~0.9 m is outside its field of view at EVERY
+    # distance - it is an obstacle camera, not a tag camera. camera2 is horizontal
+    # at 0.92 m, the height the arena photographs show the tag boards at, and sees
+    # them from 0.5 m out to 4 m.
+    #
+    # This is the likeliest reason /detections ran for the whole 406 s recording and
+    # produced 260 messages with not one non-empty detection.
+    #
+    # Caveat, and it needs checking before the run: in that same recording
+    # /camera2/camera2/color/image_raw and its camera_info both carry ZERO messages.
+    # camera2 was streaming only IMU - its colour stream was disabled. If it is
+    # still off on the day the organisers have to enable it, so verify early:
+    #   ros2 topic hz /camera2/camera2/color/image_raw
+    # and fall back with camera:=camera1 only if there is no other option, knowing
+    # that geometry says it will see nothing.
+    declare_camera = DeclareLaunchArgument(
+        "camera",
+        default_value="camera2",
+        description="camera2 (horizontal, 0.92 m - sees the tags) or camera1 "
+                    "(pitched 67deg down, floor only).",
+    )
+    camera = LaunchConfiguration("camera")
+
+    RAW_IMAGE = ["/", camera, "/", camera, "/color/image_raw"]
+    RAW_INFO = ["/", camera, "/", camera, "/color/camera_info"]
+    RECT_IMAGE = ["/", camera, "/", camera, "/color/image_rect"]
 
     rectify_top_camera = Node(
         package="image_proc",
@@ -105,8 +138,8 @@ def generate_launch_description():
         name="rectify_top_camera",
         parameters=[{"use_sim_time": use_sim_time}],
         remappings=[
-            ("image", "/camera1/camera1/color/image_raw"),
-            ("camera_info", "/camera1/camera1/color/camera_info"),
+            ("image", RAW_IMAGE),
+            ("camera_info", RAW_INFO),
             ("image_rect", RECT_IMAGE),
         ],
     )
@@ -124,6 +157,7 @@ def generate_launch_description():
     ld = LaunchDescription()
     ld.add_action(declare_tag_size)
     ld.add_action(declare_use_sim_time)
+    ld.add_action(declare_camera)
     ld.add_action(rectify_top_camera)
     ld.add_action(apriltag_top_camera)
     return ld
