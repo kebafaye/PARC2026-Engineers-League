@@ -28,10 +28,29 @@ def generate_launch_description():
     # wrong on the day and the one that scales every reported distance. The default
     # in apriltag_tags.yaml is measured from the organisers' arena generator; the
     # printed tags on the physical robot may differ. See that file's comment.
+    # Defaults to the PHYSICAL arena, not the simulator, for the same reason
+    # use_sim_time does below: the real run is the one that scores.
+    #
+    # 0.120 is measured from the organisers' world_generator (TAG_SIZE = 0.15 m face,
+    # black square 0.800 of it) and is correct ONLY in simulation. Photographs of the
+    # real arena show something different: each tag is printed on a sheet and taped to
+    # a plywood board, and the black square spans roughly 76-80% of the sheet's width.
+    # On A4 portrait (210 mm) that is 160-168 mm - consistent with the 16.5 cm the
+    # phase-réelle guide quotes, and NOT with 0.120.
+    #
+    # Getting this wrong is silent and scales every reported distance: at 0.120 against
+    # a real 0.165 tag the robot believes each one is 1.37x closer than it is, parks
+    # short, and fails the 0.5 m rule while detection looks flawless.
+    #
+    # Still worth measuring on the day rather than trusting either number - the print
+    # need not match the guide. outils/calibrate_tag_size.py, at a tape-measured
+    # distance, through the real lens:
+    #   ros2 launch parc_solution apriltag_detection.launch.py tag_size:=<mesure>
     declare_tag_size = DeclareLaunchArgument(
         "tag_size",
-        default_value="0.12",
-        description="Edge of the tag's BLACK SQUARE in metres, not the card.",
+        default_value="0.165",
+        description="Edge of the tag's BLACK SQUARE in metres, not the sheet. "
+                    "0.165 on the physical arena; pass 0.12 in simulation.",
     )
     tag_size = LaunchConfiguration("tag_size")
 

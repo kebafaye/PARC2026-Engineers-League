@@ -34,7 +34,13 @@
         # solutions/test_assets/calibrate_tag_size.py, and take whatever it prints - it
         # goes through the real lens and the real print. Override without rebuilding:
         #   ros2 launch parc_solution apriltag_detection.launch.py tag_size:=0.165
-        size: 0.12
+        # NOTE: the launch file passes `size` as a parameter AFTER this file, so this
+        # value only applies when apriltag_node is run without it. Both now default to
+        # the PHYSICAL arena. Photographs of it show each tag printed on a sheet and
+        # taped to plywood, black square ~76-80% of the sheet width - on A4 portrait
+        # that is 160-168 mm, matching the guide's 16.5 cm, not the 0.120 above.
+        # 0.120 remains correct for the SIMULATOR only; sim.sh passes tag_size:=0.12.
+        size: 0.165
         max_hamming: 0
         qos_profile: default
 
