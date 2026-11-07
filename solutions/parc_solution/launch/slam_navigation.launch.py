@@ -30,7 +30,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.conditions import UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -86,6 +86,31 @@ def generate_launch_description():
     # never moves. Overridable on the robot without a rebuild:
     #   ros2 launch parc_solution slam_navigation.launch.py cmd_vel_out_topic:=/cmd_vel
     # Where the stamper delivers. Confirmed from the robot's own rosbag.
+    # Nav2 demarre APRES slam_toolbox, pas en meme temps.
+    #
+    # Deux raisons, et la seconde vaut sur n'importe quelle machine. D'abord l'ordre
+    # est logiquement le bon : les costmaps Nav2 refusent de s'activer sans
+    # `map -> odom`, et echouent sur "Failed to activate global_costmap because
+    # transform from base_footprint to map is not available" quand SLAM n'est pas
+    # encore la. Ensuite le pic de charge : slam_toolbox et les dix noeuds Nav2
+    # demarrant ensemble saturent la machine au pire moment, et slam_toolbox finit sa
+    # configuration sans parvenir a REPONDRE a son gestionnaire -
+    #
+    #   [WARN] [slam_toolbox.rclcpp]: failed to send response to
+    #          /slam_toolbox/change_state (timeout)
+    #
+    # apres quoi le gestionnaire n'active jamais rien et les deux noeuds restent
+    # `inactive` sans qu'aucune erreur ne le dise clairement.
+    #
+    # Defaut a 0 pour ne pas ralentir le robot sans preuve qu'il en ait besoin ;
+    # sim.sh passe une valeur genereuse parce que ce PC, lui, en a besoin.
+    declare_nav2_delay = DeclareLaunchArgument(
+        "nav2_delay_s",
+        default_value="0.0",
+        description="Delai avant le demarrage de Nav2, laissant slam_toolbox "
+                    "s'activer d'abord. Augmenter sur une machine chargee.",
+    )
+
     declare_cmd_vel_robot = DeclareLaunchArgument(
         "cmd_vel_robot_topic",
         default_value="/botwheel_explorer/cmd_vel",
@@ -200,10 +225,14 @@ def generate_launch_description():
     ld.add_action(declare_nav2_params)
     ld.add_action(declare_slam_params)
     ld.add_action(declare_cmd_vel_out)
+    ld.add_action(declare_nav2_delay)
     ld.add_action(declare_cmd_vel_robot)
     ld.add_action(start_slam)
     ld.add_action(start_slam_lifecycle_manager)
     ld.add_action(start_cmd_vel_stamper)
     ld.add_action(start_speed_governor)
-    ld.add_action(start_navigation)
+    ld.add_action(TimerAction(
+        period=LaunchConfiguration("nav2_delay_s"),
+        actions=[start_navigation],
+    ))
     return ld
